@@ -19,13 +19,19 @@ dependencies = [
     "biopython",
     "sympy",
     "dill",
+    "pandas",
+    "numba",
+    "unum",
 ]
 
 [project.optional-dependencies]
 test = ["pytest"]
+# For the comparison harness that imports a live vEcoli/vivarium-ecoli
+# alongside vParCa and diffs sim_data after each stage.
+compare = ["vivarium-core"]
 
 [tool.setuptools.packages.find]
-include = ["vparca*"]
+include = ["vparca*", "reconstruction*", "wholecell*", "ecoli*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
