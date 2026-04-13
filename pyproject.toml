@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vparca"
+version = "0.1.0"
+description = "Process-bigraph migration of the E. coli Parameter Calculator (ParCa) from vEcoli / vivarium-ecoli"
+requires-python = ">=3.10"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Eran Agmon" }]
+dependencies = [
+    "process-bigraph",
+    "bigraph-schema",
+    "numpy",
+    "scipy",
+    "cvxpy",
+    "biopython",
+    "sympy",
+    "dill",
+]
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[tool.setuptools.packages.find]
+include = ["vparca*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
