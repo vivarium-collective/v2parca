@@ -17,14 +17,19 @@ import numpy as np
 
 from wholecell.utils import units
 
-from vparca._shared import rescale_mass_for_soluble_metabolites
-from vparca._types import (
+from vparca.fitting import rescale_mass_for_soluble_metabolites
+from vparca.types import (
     SetConditionsConditionInput,
     SetConditionsConditionOutput,
     SetConditionsInput,
     SetConditionsOutput,
 )
 
+
+import time
+from process_bigraph import Step
+
+from vparca.state import ParcaState
 
 # ============================================================================
 # Extract / Merge
@@ -256,3 +261,134 @@ def compute_set_conditions(inp: SetConditionsInput) -> SetConditionsOutput:
         ribosomeFractionActiveDict=ribosomeFractionActiveDict,
         condition_outputs=condition_outputs,
     )
+
+
+
+# ---------------------------------------------------------------------------
+# Stage 8: Set Conditions — Extract / Pure / Merge
+# ---------------------------------------------------------------------------
+
+# Port schema shared by Extract (outputs) and SetConditionsStep (inputs)
+_STAGE_08_INPUT_PORTS = {
+    'conditions': 'overwrite',
+    'is_mRNA': 'overwrite',
+    'is_tRNA': 'overwrite',
+    'is_rRNA': 'overwrite',
+    'includes_ribosomal_protein': 'overwrite',
+    'includes_RNAP': 'overwrite',
+}
+
+# Port schema shared by SetConditionsStep (outputs) and Merge (inputs)
+_STAGE_08_OUTPUT_PORTS = {
+    'rnaSynthProbFraction': 'overwrite',
+    'rnapFractionActiveDict': 'overwrite',
+    'rnaSynthProbRProtein': 'overwrite',
+    'rnaSynthProbRnaPolymerase': 'overwrite',
+    'rnaPolymeraseElongationRateDict': 'overwrite',
+    'expectedDryMassIncreaseDict': 'overwrite',
+    'ribosomeElongationRateDict': 'overwrite',
+    'ribosomeFractionActiveDict': 'overwrite',
+    'condition_outputs': 'overwrite',
+}
+
+
+class ExtractForStage8Step(Step):
+    """Helper: extract fields from parca_state for the pure Stage 8 step."""
+
+    def inputs(self):
+        return {'state': 'parca_state'}
+
+    def outputs(self):
+        return dict(_STAGE_08_INPUT_PORTS)
+
+    def update(self, state):
+        parca_state = state['state']
+        inp = extract_input(parca_state.sim_data, parca_state.cell_specs)
+        return {
+            'conditions': inp.conditions,
+            'is_mRNA': inp.is_mRNA,
+            'is_tRNA': inp.is_tRNA,
+            'is_rRNA': inp.is_rRNA,
+            'includes_ribosomal_protein': inp.includes_ribosomal_protein,
+            'includes_RNAP': inp.includes_RNAP,
+        }
+
+
+class SetConditionsStep(Step):
+    """Stage 8: PURE — every field is an explicit typed port.
+
+    No parca_state in inputs or outputs.  Operates entirely on
+    individually-named data ports extracted by ExtractForStage8Step.
+    """
+
+    config_schema = {
+        'verbose': {'_type': 'integer', '_default': 1},
+    }
+
+    def inputs(self):
+        return dict(_STAGE_08_INPUT_PORTS)
+
+    def outputs(self):
+        return dict(_STAGE_08_OUTPUT_PORTS)
+
+    def update(self, state):
+        t0 = time.time()
+        inp = SetConditionsInput(
+            conditions=state['conditions'],
+            is_mRNA=state['is_mRNA'],
+            is_tRNA=state['is_tRNA'],
+            is_rRNA=state['is_rRNA'],
+            includes_ribosomal_protein=state['includes_ribosomal_protein'],
+            includes_RNAP=state['includes_RNAP'],
+            verbose=self.config.get('verbose', 1),
+        )
+        out = compute_set_conditions(inp)
+        print(f"  Stage 8 (set_conditions) completed in {time.time() - t0:.1f}s")
+        return {
+            'rnaSynthProbFraction': out.rnaSynthProbFraction,
+            'rnapFractionActiveDict': out.rnapFractionActiveDict,
+            'rnaSynthProbRProtein': out.rnaSynthProbRProtein,
+            'rnaSynthProbRnaPolymerase': out.rnaSynthProbRnaPolymerase,
+            'rnaPolymeraseElongationRateDict': out.rnaPolymeraseElongationRateDict,
+            'expectedDryMassIncreaseDict': out.expectedDryMassIncreaseDict,
+            'ribosomeElongationRateDict': out.ribosomeElongationRateDict,
+            'ribosomeFractionActiveDict': out.ribosomeFractionActiveDict,
+            'condition_outputs': out.condition_outputs,
+        }
+
+
+class MergeAfterStage8Step(Step):
+    """Helper: merge Stage 8 outputs back into parca_state."""
+
+    def inputs(self):
+        return {
+            'state': 'parca_state',
+            **_STAGE_08_OUTPUT_PORTS,
+        }
+
+    def outputs(self):
+        return {'state': 'parca_state'}
+
+    def update(self, state):
+        parca_state = state['state']
+        sim_data = parca_state.sim_data
+        cell_specs = parca_state.cell_specs
+
+        out = SetConditionsOutput(
+            rnaSynthProbFraction=state['rnaSynthProbFraction'],
+            rnapFractionActiveDict=state['rnapFractionActiveDict'],
+            rnaSynthProbRProtein=state['rnaSynthProbRProtein'],
+            rnaSynthProbRnaPolymerase=state['rnaSynthProbRnaPolymerase'],
+            rnaPolymeraseElongationRateDict=state['rnaPolymeraseElongationRateDict'],
+            expectedDryMassIncreaseDict=state['expectedDryMassIncreaseDict'],
+            ribosomeElongationRateDict=state['ribosomeElongationRateDict'],
+            ribosomeFractionActiveDict=state['ribosomeFractionActiveDict'],
+            condition_outputs=state['condition_outputs'],
+        )
+        merge_output(sim_data, cell_specs, out)
+
+        return {
+            'state': ParcaState(sim_data=sim_data, cell_specs=cell_specs),
+        }
+
+

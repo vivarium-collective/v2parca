@@ -1,41 +1,40 @@
 """
-ParCa pipeline stages as pure functions with explicit Input/Output dataclasses.
+vParCa — process-bigraph migration of the E. coli Parameter Calculator.
 
-Pipeline Overview
-=================
-Stage 1 (initialize) is a constructor in fit_sim_data_1.py — not a module here.
+Layout
+======
 
-Stages 2-9 each provide three functions:
+    vparca/
+        composite.py          build_parca_composite / run_parca / register_parca_steps
+        state.py              ParcaState bigraph-schema type + register_parca_types
+        types.py              Input/Output dataclasses for every stage
+        fitting.py            pure math + sim_data-reading fitting helpers
+        promoter_fitting.py   matrix builders + CVXPY optimization (stages 6/7)
+        stages/
+            __init__.py       ALL_STEP_CLASSES registry
+            stage_01_initialize.py
+            stage_02_input_adjustments.py      (Extract → Compute → Merge, PURE)
+            stage_03_basal_specs.py            (COUPLED)
+            stage_04_tf_condition_specs.py     (COUPLED)
+            stage_05_fit_condition.py          (READ-ONLY)
+            stage_06_promoter_binding.py       (COUPLED)
+            stage_07_adjust_promoters.py       (COUPLED)
+            stage_08_set_conditions.py         (Extract → Compute → Merge, PURE)
+            stage_09_final_adjustments.py      (COUPLED)
+
+Each stage module (2–9) provides:
+
     extract_input(sim_data, cell_specs, **kwargs) -> StageInput
-    compute_*(inp: StageInput) -> StageOutput
-    merge_output(sim_data, cell_specs, out: StageOutput)
+    compute_<name>(inp: StageInput)              -> StageOutput
+    merge_output(sim_data, cell_specs, out)      -> None
+    <StageName>Step(Step)                         — process-bigraph wrapper
 
-Stage Registry
-==============
-Stage  Module                         Purity       Input/Output Types
------  ------                         ------       ------------------
-  2    stage_02_input_adjustments     PURE         InputAdjustmentsInput → InputAdjustmentsOutput
-  3    stage_03_basal_specs           COUPLED      BasalSpecsInput (sim_data_ref) → BasalSpecsOutput
-  4    stage_04_tf_condition_specs    COUPLED      TfConditionSpecsInput (sim_data_ref) → TfConditionSpecsOutput
-  5    stage_05_fit_condition         READ-ONLY    FitConditionInput (sim_data_ref) → FitConditionOutput
-  6    stage_06_promoter_binding      COUPLED      PromoterBindingInput (sim_data_ref, cell_specs_ref) → PromoterBindingOutput
-  7    stage_07_adjust_promoters      COUPLED      AdjustPromotersInput (sim_data_ref, cell_specs_ref) → AdjustPromotersOutput
-  8    stage_08_set_conditions        PURE         SetConditionsInput → SetConditionsOutput
-  9    stage_09_final_adjustments     COUPLED      FinalAdjustmentsInput (sim_data_ref, cell_specs_ref) → FinalAdjustmentsOutput
+Pure stages (2, 8) additionally expose ExtractFor... and MergeAfter...
+Step classes so the compute Step has only explicit typed ports.
 
-Purity legend:
-  PURE      — compute function has no sim_data/cell_specs access; fully testable with synthetic data
-  READ-ONLY — compute reads sim_data via ref but does not mutate it
-  COUPLED   — compute mutates sim_data via ref (future refactoring target)
-
-Shared Utilities
-================
-  _math.py    — Pure math functions (no sim_data): distributions, loss rates, mass rescaling
-  _fitting.py — sim_data-reading functions: expressionConverge, fitExpression, createBulkContainer
-  _shared.py  — Backward-compatible re-export shim (imports from _math and _fitting)
-  _types.py   — All Input/Output dataclasses for stages 2-9
-
-External Dependencies
-=====================
-  parca_promoter_fitting.py — Matrix builders and CVXPY optimization for stages 6 and 7
+Purity legend
+=============
+  PURE       compute has no sim_data/cell_specs access
+  READ-ONLY  compute reads sim_data via ref but does not mutate it
+  COUPLED    compute still mutates sim_data via ref (future refactor target)
 """

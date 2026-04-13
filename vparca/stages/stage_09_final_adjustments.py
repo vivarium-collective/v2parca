@@ -22,11 +22,16 @@ merge_output is a no-op.
 
 from ecoli.library.initial_conditions import create_bulk_container
 
-from vparca._types import (
+from vparca.types import (
     FinalAdjustmentsInput,
     FinalAdjustmentsOutput,
 )
 
+
+import time
+from process_bigraph import Step
+
+from vparca.state import ParcaState
 
 # ============================================================================
 # Extract / Merge
@@ -89,3 +94,35 @@ def compute_final_adjustments(inp: FinalAdjustmentsInput) -> FinalAdjustmentsOut
     )
 
     return FinalAdjustmentsOutput()
+
+
+
+# ---------------------------------------------------------------------------
+# Stage 9: Final Adjustments (COUPLED)
+# ---------------------------------------------------------------------------
+
+class FinalAdjustmentsStep(Step):
+    """Stage 9: Apply final expression adjustments, set amino acid supply
+    constants, and configure ppGpp kinetics."""
+
+    def inputs(self):
+        return {'state': 'parca_state'}
+
+    def outputs(self):
+        return {'state': 'parca_state'}
+
+    def update(self, state):
+        t0 = time.time()
+        parca_state = state['state']
+        sim_data = parca_state.sim_data
+        cell_specs = parca_state.cell_specs
+
+        inp = extract_input(sim_data, cell_specs)
+        out = compute_final_adjustments(inp)
+        merge_output(sim_data, cell_specs, out)
+
+        print(f"  Stage 9 (final_adjustments) completed in {time.time() - t0:.1f}s")
+        return {
+            'state': ParcaState(sim_data=sim_data, cell_specs=cell_specs),
+        }
+

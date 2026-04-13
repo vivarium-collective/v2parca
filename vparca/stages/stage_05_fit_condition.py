@@ -30,7 +30,7 @@ from ecoli.library.schema import bulk_name_to_idx, counts
 from wholecell.utils import units
 from wholecell.utils.fitting import normalize
 
-from vparca._shared import (
+from vparca.fitting import (
     apply_updates,
     netLossRateFromDilutionAndDegradationProtein,
     proteinDistributionFrommRNA,
@@ -38,12 +38,17 @@ from vparca._shared import (
     totalCountIdDistributionRNA,
     totalCountIdDistributionProtein,
 )
-from vparca._types import (
+from vparca.types import (
     FitConditionConditionInput,
     FitConditionConditionOutput,
     FitConditionInput,
     FitConditionOutput,
 )
+
+import time
+from process_bigraph import Step
+
+from vparca.state import ParcaState
 
 # Constants (mirrored from fit_sim_data_1.py)
 N_SEEDS = 10
@@ -394,3 +399,48 @@ def compute_fit_condition(inp: FitConditionInput) -> FitConditionOutput:
         condition_outputs=condition_outputs,
         translation_supply_rate=translation_supply_rate,
     )
+
+
+
+# ---------------------------------------------------------------------------
+# Stage 5: Fit Condition (COUPLED)
+# ---------------------------------------------------------------------------
+
+class FitConditionStep(Step):
+    """Stage 5: Calculate bulk distributions and translation supply rates."""
+
+    config_schema = {
+        'cpus': {'_type': 'integer', '_default': 1},
+    }
+
+    def inputs(self):
+        return {'state': 'parca_state'}
+
+    def outputs(self):
+        return {
+            'state': 'parca_state',
+            'condition_outputs': 'overwrite',
+            'translation_supply_rate': 'overwrite',
+        }
+
+    def update(self, state):
+        t0 = time.time()
+        parca_state = state['state']
+        sim_data = parca_state.sim_data
+        cell_specs = parca_state.cell_specs
+
+        inp = extract_input(
+            sim_data, cell_specs,
+            cpus=self.config.get('cpus', 1),
+        )
+        out = compute_fit_condition(inp)
+        merge_output(sim_data, cell_specs, out)
+
+        print(f"  Stage 5 (fit_condition) completed in {time.time() - t0:.1f}s")
+        return {
+            'state': ParcaState(sim_data=sim_data, cell_specs=cell_specs),
+            'condition_outputs': out.condition_outputs,
+            'translation_supply_rate': out.translation_supply_rate,
+        }
+
+

@@ -19,15 +19,21 @@ reverse rates to sim_data.  merge_output writes basal_prob and
 delta_prob to sim_data.
 """
 
-from vparca._types import (
+from vparca.types import (
     AdjustPromotersInput,
     AdjustPromotersOutput,
 )
-from vparca.parca_promoter_fitting import (
+from vparca.promoter_fitting import (
+
     fitLigandConcentrations,
     calculateRnapRecruitment,
 )
 
+
+import time
+from process_bigraph import Step
+
+from vparca.state import ParcaState
 
 # ============================================================================
 # Extract / Merge
@@ -75,3 +81,41 @@ def compute_adjust_promoters(inp: AdjustPromotersInput) -> AdjustPromotersOutput
         basal_prob=basal_prob,
         delta_prob=delta_prob,
     )
+
+
+
+# ---------------------------------------------------------------------------
+# Stage 7: Adjust Promoters (COUPLED)
+# ---------------------------------------------------------------------------
+
+class AdjustPromotersStep(Step):
+    """Stage 7: Adjust ligand concentrations and construct RNAP recruitment."""
+
+    def inputs(self):
+        return {'state': 'parca_state'}
+
+    def outputs(self):
+        return {
+            'state': 'parca_state',
+            'basal_prob': 'overwrite',
+            'delta_prob': 'overwrite',
+        }
+
+    def update(self, state):
+        t0 = time.time()
+        parca_state = state['state']
+        sim_data = parca_state.sim_data
+        cell_specs = parca_state.cell_specs
+
+        inp = extract_input(sim_data, cell_specs)
+        out = compute_adjust_promoters(inp)
+        merge_output(sim_data, cell_specs, out)
+
+        print(f"  Stage 7 (adjust_promoters) completed in {time.time() - t0:.1f}s")
+        return {
+            'state': ParcaState(sim_data=sim_data, cell_specs=cell_specs),
+            'basal_prob': out.basal_prob,
+            'delta_prob': out.delta_prob,
+        }
+
+

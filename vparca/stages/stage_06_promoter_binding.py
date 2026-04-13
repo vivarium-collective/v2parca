@@ -20,14 +20,20 @@ fitPromoterBoundProbability writes pPromoterBound and rna_synth_prob
 to sim_data.  merge_output only writes cell_specs.
 """
 
-from vparca._types import (
+from vparca.types import (
     PromoterBindingInput,
     PromoterBindingOutput,
 )
-from vparca.parca_promoter_fitting import (
+from vparca.promoter_fitting import (
+
     fitPromoterBoundProbability,
 )
 
+
+import time
+from process_bigraph import Step
+
+from vparca.state import ParcaState
 
 # ============================================================================
 # Extract / Merge
@@ -75,3 +81,41 @@ def compute_promoter_binding(inp: PromoterBindingInput) -> PromoterBindingOutput
         r_vector=r_vector,
         r_columns=r_columns,
     )
+
+
+
+# ---------------------------------------------------------------------------
+# Stage 6: Promoter Binding (COUPLED)
+# ---------------------------------------------------------------------------
+
+class PromoterBindingStep(Step):
+    """Stage 6: Fit transcription factor binding probabilities."""
+
+    def inputs(self):
+        return {'state': 'parca_state'}
+
+    def outputs(self):
+        return {
+            'state': 'parca_state',
+            'r_vector': 'overwrite',
+            'r_columns': 'overwrite',
+        }
+
+    def update(self, state):
+        t0 = time.time()
+        parca_state = state['state']
+        sim_data = parca_state.sim_data
+        cell_specs = parca_state.cell_specs
+
+        inp = extract_input(sim_data, cell_specs)
+        out = compute_promoter_binding(inp)
+        merge_output(sim_data, cell_specs, out)
+
+        print(f"  Stage 6 (promoter_binding) completed in {time.time() - t0:.1f}s")
+        return {
+            'state': ParcaState(sim_data=sim_data, cell_specs=cell_specs),
+            'r_vector': out.r_vector,
+            'r_columns': out.r_columns,
+        }
+
+

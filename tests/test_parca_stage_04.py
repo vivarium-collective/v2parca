@@ -27,7 +27,7 @@ class TestImports:
     """Verify all stage 4 modules can be imported."""
 
     def test_import_stage_module(self):
-        from vparca.stage_04_tf_condition_specs import (
+        from vparca.stages.stage_04_tf_condition_specs import (
             extract_input,
             compute_tf_condition_specs,
             merge_output,
@@ -38,7 +38,7 @@ class TestImports:
         assert callable(merge_output)
 
     def test_import_sub_functions(self):
-        from vparca.stage_04_tf_condition_specs import (
+        from vparca.stages.stage_04_tf_condition_specs import (
             buildTfConditionCellSpecifications,
             buildCombinedConditionCellSpecifications,
         )
@@ -47,7 +47,7 @@ class TestImports:
         assert callable(buildCombinedConditionCellSpecifications)
 
     def test_import_shared_functions(self):
-        from vparca._shared import (
+        from vparca.fitting import (
             apply_updates,
             expressionConverge,
             expressionFromConditionAndFoldChange,
@@ -62,7 +62,7 @@ class TestDataTypes:
     """Verify dataclass instantiation works."""
 
     def test_input_creation(self):
-        from vparca._types import TfConditionSpecsInput
+        from vparca.types import TfConditionSpecsInput
 
         inp = TfConditionSpecsInput(
             variable_elongation_transcription=True,
@@ -76,7 +76,7 @@ class TestDataTypes:
         assert inp.cpus == 1
 
     def test_output_creation(self):
-        from vparca._types import (
+        from vparca.types import (
             TfConditionSpecsOutput,
             TfConditionSpecsConditionOutput,
         )
@@ -123,7 +123,7 @@ class TestTfConditionSpecsSmokeTest:
 
     def test_extract_input(self, sim_data_before, cell_specs_before):
         """Verify extract_input runs without error on real data."""
-        from vparca.stage_04_tf_condition_specs import (
+        from vparca.stages.stage_04_tf_condition_specs import (
             extract_input,
         )
 
@@ -138,7 +138,7 @@ class TestTfConditionSpecsSmokeTest:
 
     def test_extract_input_with_kwargs(self, sim_data_before, cell_specs_before):
         """Verify kwargs are captured."""
-        from vparca.stage_04_tf_condition_specs import (
+        from vparca.stages.stage_04_tf_condition_specs import (
             extract_input,
         )
 
@@ -293,8 +293,8 @@ class TestTfConditionSpecsRegression:
 
     def test_merge_output_roundtrip(self, sim_data_before, cell_specs_after):
         """Verify merge_output produces the expected cell_specs structure."""
-        from vparca.stage_04_tf_condition_specs import merge_output
-        from vparca._types import (
+        from vparca.stages.stage_04_tf_condition_specs import merge_output
+        from vparca.types import (
             TfConditionSpecsOutput,
             TfConditionSpecsConditionOutput,
         )

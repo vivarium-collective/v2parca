@@ -29,7 +29,7 @@ class TestImports:
     """Verify all stage 5 modules can be imported."""
 
     def test_import_stage_module(self):
-        from vparca.stage_05_fit_condition import (
+        from vparca.stages.stage_05_fit_condition import (
             extract_input,
             compute_fit_condition,
             merge_output,
@@ -40,7 +40,7 @@ class TestImports:
         assert callable(merge_output)
 
     def test_import_sub_functions(self):
-        from vparca.stage_05_fit_condition import (
+        from vparca.stages.stage_05_fit_condition import (
             totalCountIdDistributionRNA,
             totalCountIdDistributionProtein,
             calculateBulkDistributions,
@@ -57,7 +57,7 @@ class TestDataTypes:
     """Verify dataclass instantiation works."""
 
     def test_condition_input_creation(self):
-        from vparca._types import FitConditionConditionInput
+        from vparca.types import FitConditionConditionInput
 
         inp = FitConditionConditionInput(
             condition_label="basal",
@@ -70,7 +70,7 @@ class TestDataTypes:
         assert inp.condition_label == "basal"
 
     def test_output_creation(self):
-        from vparca._types import (
+        from vparca.types import (
             FitConditionConditionOutput,
             FitConditionOutput,
         )
@@ -118,7 +118,7 @@ class TestFitConditionSmokeTest:
 
     def test_extract_input(self, sim_data_tf, cell_specs_tf):
         """Verify extract_input runs without error on real data."""
-        from vparca.stage_05_fit_condition import extract_input
+        from vparca.stages.stage_05_fit_condition import extract_input
 
         inp = extract_input(sim_data_tf, cell_specs_tf)
 
@@ -138,7 +138,7 @@ class TestFitConditionSmokeTest:
 
     def test_extract_with_cpus_kwarg(self, sim_data_tf, cell_specs_tf):
         """Verify cpus kwarg is captured."""
-        from vparca.stage_05_fit_condition import extract_input
+        from vparca.stages.stage_05_fit_condition import extract_input
 
         inp = extract_input(sim_data_tf, cell_specs_tf, cpus=4)
         assert inp.cpus == 4
@@ -183,7 +183,7 @@ class TestFitConditionRegression:
 
     def test_extract_input_on_after_state(self, sim_data_after, cell_specs_after):
         """Verify extract_input works on the after-state (round-trip capability)."""
-        from vparca.stage_05_fit_condition import extract_input
+        from vparca.stages.stage_05_fit_condition import extract_input
 
         inp = extract_input(sim_data_after, cell_specs_after)
         assert len(inp.conditions) == len(cell_specs_after)

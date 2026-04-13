@@ -24,17 +24,22 @@ import numpy as np
 
 from wholecell.utils import parallelization
 
-from vparca._shared import (
+from vparca.fitting import (
     apply_updates,
     expressionConverge,
     expressionFromConditionAndFoldChange,
 )
-from vparca._types import (
+from vparca.types import (
     TfConditionSpecsConditionOutput,
     TfConditionSpecsInput,
     TfConditionSpecsOutput,
 )
 
+
+import time
+from process_bigraph import Step
+
+from vparca.state import ParcaState
 
 # ============================================================================
 # Extract / Merge
@@ -363,3 +368,62 @@ def buildCombinedConditionCellSpecifications(
         sim_data.process.transcription.fit_cistron_expression[conditionKey] = (
             cell_specs[conditionKey]["fit_cistron_expression"]
         )
+
+
+
+# ---------------------------------------------------------------------------
+# Stage 4: TF Condition Specs (COUPLED)
+# ---------------------------------------------------------------------------
+
+class TfConditionSpecsStep(Step):
+    """Stage 4: Build cell specifications for each TF condition."""
+
+    config_schema = {
+        'variable_elongation_transcription': {
+            '_type': 'boolean', '_default': True},
+        'variable_elongation_translation': {
+            '_type': 'boolean', '_default': False},
+        'disable_ribosome_capacity_fitting': {
+            '_type': 'boolean', '_default': False},
+        'disable_rnapoly_capacity_fitting': {
+            '_type': 'boolean', '_default': False},
+        'cpus': {'_type': 'integer', '_default': 1},
+    }
+
+    def inputs(self):
+        return {'state': 'parca_state'}
+
+    def outputs(self):
+        return {
+            'state': 'parca_state',
+            'condition_outputs': 'overwrite',
+        }
+
+    def update(self, state):
+        t0 = time.time()
+        parca_state = state['state']
+        sim_data = parca_state.sim_data
+        cell_specs = parca_state.cell_specs
+
+        inp = extract_input(
+            sim_data, cell_specs,
+            variable_elongation_transcription=self.config.get(
+                'variable_elongation_transcription', True),
+            variable_elongation_translation=self.config.get(
+                'variable_elongation_translation', False),
+            disable_ribosome_capacity_fitting=self.config.get(
+                'disable_ribosome_capacity_fitting', False),
+            disable_rnapoly_capacity_fitting=self.config.get(
+                'disable_rnapoly_capacity_fitting', False),
+            cpus=self.config.get('cpus', 1),
+        )
+        out = compute_tf_condition_specs(inp)
+        merge_output(sim_data, cell_specs, out)
+
+        print(f"  Stage 4 (tf_condition_specs) completed in {time.time() - t0:.1f}s")
+        return {
+            'state': ParcaState(sim_data=sim_data, cell_specs=cell_specs),
+            'condition_outputs': out.condition_outputs,
+        }
+
+

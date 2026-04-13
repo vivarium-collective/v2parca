@@ -27,7 +27,7 @@ class TestImports:
     """Verify all stage 3 modules can be imported."""
 
     def test_import_stage_module(self):
-        from vparca.stage_03_basal_specs import (
+        from vparca.stages.stage_03_basal_specs import (
             extract_input,
             compute_basal_specs,
             merge_output,
@@ -38,7 +38,7 @@ class TestImports:
         assert callable(merge_output)
 
     def test_import_sub_functions(self):
-        from vparca.stage_03_basal_specs import (
+        from vparca.stages.stage_03_basal_specs import (
             setKmCooperativeEndoRNonLinearRNAdecay,
             fitMaintenanceCosts,
         )
@@ -47,7 +47,7 @@ class TestImports:
         assert callable(fitMaintenanceCosts)
 
     def test_import_shared_functions(self):
-        from vparca._shared import (
+        from vparca.fitting import (
             expressionConverge,
             setInitialRnaExpression,
             createBulkContainer,
@@ -74,7 +74,7 @@ class TestDataTypes:
     """Verify dataclass instantiation works."""
 
     def test_input_creation(self):
-        from vparca._types import BasalSpecsInput
+        from vparca.types import BasalSpecsInput
 
         inp = BasalSpecsInput(
             variable_elongation_transcription=True,
@@ -88,7 +88,7 @@ class TestDataTypes:
         assert inp.cache_dir == "/tmp"
 
     def test_output_creation(self):
-        from vparca._types import BasalSpecsOutput
+        from vparca.types import BasalSpecsOutput
 
         out = BasalSpecsOutput(
             conc_dict={"A[c]": 1.0},
@@ -121,7 +121,7 @@ class TestBasalSpecsSmokeTest:
 
     def test_extract_input(self, sim_data_before):
         """Verify extract_input runs without error on real data."""
-        from vparca.stage_03_basal_specs import extract_input
+        from vparca.stages.stage_03_basal_specs import extract_input
 
         inp = extract_input(sim_data_before, {}, cache_dir="/tmp")
 
@@ -134,7 +134,7 @@ class TestBasalSpecsSmokeTest:
 
     def test_extract_input_with_kwargs(self, sim_data_before):
         """Verify kwargs are captured."""
-        from vparca.stage_03_basal_specs import extract_input
+        from vparca.stages.stage_03_basal_specs import extract_input
 
         inp = extract_input(
             sim_data_before,

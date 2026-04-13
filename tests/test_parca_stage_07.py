@@ -27,7 +27,7 @@ class TestImports:
     """Verify all stage 7 modules can be imported."""
 
     def test_import_stage_module(self):
-        from vparca.stage_07_adjust_promoters import (
+        from vparca.stages.stage_07_adjust_promoters import (
             extract_input,
             compute_adjust_promoters,
             merge_output,
@@ -38,7 +38,7 @@ class TestImports:
         assert callable(merge_output)
 
     def test_import_promoter_fitting_functions(self):
-        from vparca.parca_promoter_fitting import (
+        from vparca.promoter_fitting import (
             fitLigandConcentrations,
             calculateRnapRecruitment,
         )
@@ -51,7 +51,7 @@ class TestDataTypes:
     """Verify dataclass instantiation works."""
 
     def test_input_creation(self):
-        from vparca._types import AdjustPromotersInput
+        from vparca.types import AdjustPromotersInput
 
         inp = AdjustPromotersInput(
             sim_data_ref=None,
@@ -61,7 +61,7 @@ class TestDataTypes:
         assert inp.cell_specs_ref == {}
 
     def test_output_creation(self):
-        from vparca._types import AdjustPromotersOutput
+        from vparca.types import AdjustPromotersOutput
 
         out = AdjustPromotersOutput(
             basal_prob=np.array([0.1, 0.2, 0.3]),
@@ -97,7 +97,7 @@ class TestAdjustPromotersSmokeTest:
 
     def test_extract_input(self, sim_data_before, cell_specs_before):
         """Verify extract_input runs without error on real data."""
-        from vparca.stage_07_adjust_promoters import (
+        from vparca.stages.stage_07_adjust_promoters import (
             extract_input,
         )
 
@@ -194,8 +194,8 @@ class TestAdjustPromotersRegression:
 
     def test_merge_output_roundtrip(self, sim_data_after):
         """Verify merge_output correctly writes basal_prob and delta_prob."""
-        from vparca.stage_07_adjust_promoters import merge_output
-        from vparca._types import AdjustPromotersOutput
+        from vparca.stages.stage_07_adjust_promoters import merge_output
+        from vparca.types import AdjustPromotersOutput
 
         reg = sim_data_after.process.transcription_regulation
         expected_basal_prob = reg.basal_prob.copy()

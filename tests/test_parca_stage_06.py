@@ -27,7 +27,7 @@ class TestImports:
     """Verify all stage 6 modules can be imported."""
 
     def test_import_stage_module(self):
-        from vparca.stage_06_promoter_binding import (
+        from vparca.stages.stage_06_promoter_binding import (
             extract_input,
             compute_promoter_binding,
             merge_output,
@@ -38,7 +38,7 @@ class TestImports:
         assert callable(merge_output)
 
     def test_import_promoter_fitting_functions(self):
-        from vparca.parca_promoter_fitting import (
+        from vparca.promoter_fitting import (
             fitPromoterBoundProbability,
             calculatePromoterBoundProbability,
             calculateRnapRecruitment,
@@ -51,7 +51,7 @@ class TestImports:
         assert callable(fitLigandConcentrations)
 
     def test_import_matrix_builders(self):
-        from vparca.parca_promoter_fitting import (
+        from vparca.promoter_fitting import (
             _build_vector_k,
             _build_matrix_G,
             _build_matrix_Z,
@@ -72,7 +72,7 @@ class TestDataTypes:
     """Verify dataclass instantiation works."""
 
     def test_input_creation(self):
-        from vparca._types import PromoterBindingInput
+        from vparca.types import PromoterBindingInput
 
         inp = PromoterBindingInput(
             sim_data_ref=None,
@@ -82,7 +82,7 @@ class TestDataTypes:
         assert inp.cell_specs_ref == {}
 
     def test_output_creation(self):
-        from vparca._types import PromoterBindingOutput
+        from vparca.types import PromoterBindingOutput
 
         out = PromoterBindingOutput(
             r_vector=np.array([0.1, 0.2, 0.3]),
@@ -117,7 +117,7 @@ class TestPromoterBindingSmokeTest:
 
     def test_extract_input(self, sim_data_before, cell_specs_before):
         """Verify extract_input runs without error on real data."""
-        from vparca.stage_06_promoter_binding import (
+        from vparca.stages.stage_06_promoter_binding import (
             extract_input,
         )
 
@@ -245,8 +245,8 @@ class TestPromoterBindingRegression:
 
     def test_merge_output_roundtrip(self, sim_data_before, cell_specs_after):
         """Verify merge_output produces the expected cell_specs structure."""
-        from vparca.stage_06_promoter_binding import merge_output
-        from vparca._types import PromoterBindingOutput
+        from vparca.stages.stage_06_promoter_binding import merge_output
+        from vparca.types import PromoterBindingOutput
 
         r_vector = cell_specs_after["basal"]["r_vector"]
         r_columns = cell_specs_after["basal"]["r_columns"]

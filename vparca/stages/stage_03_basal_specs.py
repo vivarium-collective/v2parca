@@ -30,13 +30,19 @@ import scipy.optimize
 from ecoli.library.schema import bulk_name_to_idx, counts
 from wholecell.utils import units
 
-from vparca._shared import (
+from vparca.fitting import (
     VERBOSE,
     expressionConverge,
     rescaleMassForSolubleMetabolites,
 )
-from vparca._types import BasalSpecsInput, BasalSpecsOutput
+from vparca.types import BasalSpecsInput, BasalSpecsOutput
 
+
+
+import time
+from process_bigraph import Step
+
+from vparca.state import ParcaState
 
 # ============================================================================
 # Extract / Merge
@@ -475,3 +481,76 @@ def fitMaintenanceCosts(sim_data, bulkContainer):
         )
 
     sim_data.constants.darkATP = darkATP
+
+
+
+# ---------------------------------------------------------------------------
+# Stage 3: Basal Specs (COUPLED)
+# ---------------------------------------------------------------------------
+
+class BasalSpecsStep(Step):
+    """Stage 3: Build basal cell specifications."""
+
+    config_schema = {
+        'variable_elongation_transcription': {
+            '_type': 'boolean', '_default': True},
+        'variable_elongation_translation': {
+            '_type': 'boolean', '_default': False},
+        'disable_ribosome_capacity_fitting': {
+            '_type': 'boolean', '_default': False},
+        'disable_rnapoly_capacity_fitting': {
+            '_type': 'boolean', '_default': False},
+        'cache_dir': 'string',
+    }
+
+    def inputs(self):
+        return {'state': 'parca_state'}
+
+    def outputs(self):
+        return {
+            'state': 'parca_state',
+            'conc_dict': 'overwrite',
+            'expression': 'overwrite',
+            'synth_prob': 'overwrite',
+            'fit_cistron_expression': 'overwrite',
+            'doubling_time': 'overwrite',
+            'avg_cell_dry_mass_init': 'overwrite',
+            'fit_avg_soluble_target_mol_mass': 'overwrite',
+            'bulk_container': 'overwrite',
+        }
+
+    def update(self, state):
+        t0 = time.time()
+        parca_state = state['state']
+        sim_data = parca_state.sim_data
+        cell_specs = parca_state.cell_specs
+
+        inp = extract_input(
+            sim_data, cell_specs,
+            variable_elongation_transcription=self.config.get(
+                'variable_elongation_transcription', True),
+            variable_elongation_translation=self.config.get(
+                'variable_elongation_translation', False),
+            disable_ribosome_capacity_fitting=self.config.get(
+                'disable_ribosome_capacity_fitting', False),
+            disable_rnapoly_capacity_fitting=self.config.get(
+                'disable_rnapoly_capacity_fitting', False),
+            cache_dir=self.config.get('cache_dir', ''),
+        )
+        out = compute_basal_specs(inp)
+        merge_output(sim_data, cell_specs, out)
+
+        print(f"  Stage 3 (basal_specs) completed in {time.time() - t0:.1f}s")
+        return {
+            'state': ParcaState(sim_data=sim_data, cell_specs=cell_specs),
+            'conc_dict': out.conc_dict,
+            'expression': out.expression,
+            'synth_prob': out.synth_prob,
+            'fit_cistron_expression': out.fit_cistron_expression,
+            'doubling_time': out.doubling_time,
+            'avg_cell_dry_mass_init': out.avg_cell_dry_mass_init,
+            'fit_avg_soluble_target_mol_mass': out.fit_avg_soluble_target_mol_mass,
+            'bulk_container': out.bulk_container,
+        }
+
+

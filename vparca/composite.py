@@ -35,8 +35,8 @@ Provides:
 from process_bigraph import Composite, allocate_core
 
 from reconstruction.ecoli.simulation_data import SimulationDataEcoli
-from vparca.parca_types import ParcaState, register_parca_types
-from vparca.steps import ALL_STEP_CLASSES
+from vparca.state import ParcaState, register_parca_types
+from vparca.stages import ALL_STEP_CLASSES
 
 
 def register_parca_steps(core):

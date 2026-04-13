@@ -17,11 +17,16 @@ Pure sub-functions (no sim_data dependency):
 
 import numpy as np
 
-from vparca._types import (
+from vparca.types import (
     InputAdjustmentsInput,
     InputAdjustmentsOutput,
 )
 
+
+import time
+from process_bigraph import Step
+
+from vparca.state import ParcaState
 
 # ============================================================================
 # Extract / Merge
@@ -325,3 +330,157 @@ def compute_input_adjustments(inp: InputAdjustmentsInput) -> InputAdjustmentsOut
         protein_deg_rates=prot_deg,
         tf_to_active_inactive_conditions=tf_conditions,
     )
+
+
+
+# ---------------------------------------------------------------------------
+# Stage 2: Input Adjustments — Extract / Pure / Merge
+# ---------------------------------------------------------------------------
+
+# Port schema shared by Extract (outputs) and InputAdjustmentsStep (inputs)
+_STAGE_02_INPUT_PORTS = {
+    'monomer_ids': 'overwrite',
+    'translation_efficiencies': 'overwrite',
+    'translation_eff_adjustments': 'overwrite',
+    'balanced_translation_groups': 'overwrite',
+    'rna_ids': 'overwrite',
+    'cistron_ids': 'overwrite',
+    'basal_rna_expression': 'overwrite',
+    'rna_expression_adjustments': 'overwrite',
+    'cistron_id_to_rna_indexes': 'overwrite',
+    'rna_deg_rates': 'overwrite',
+    'cistron_deg_rates': 'overwrite',
+    'rna_deg_rate_adjustments': 'overwrite',
+    'protein_deg_rates': 'overwrite',
+    'protein_deg_rate_adjustments': 'overwrite',
+    'tf_to_active_inactive_conditions': 'overwrite',
+}
+
+# Port schema shared by InputAdjustmentsStep (outputs) and Merge (inputs)
+_STAGE_02_OUTPUT_PORTS = {
+    'translation_efficiencies': 'overwrite',
+    'basal_rna_expression': 'overwrite',
+    'rna_deg_rates': 'overwrite',
+    'cistron_deg_rates': 'overwrite',
+    'protein_deg_rates': 'overwrite',
+    'tf_to_active_inactive_conditions': 'overwrite',
+}
+
+
+class ExtractForStage2Step(Step):
+    """Helper: extract fields from parca_state for the pure Stage 2 step."""
+
+    config_schema = {
+        'debug': {'_type': 'boolean', '_default': False},
+    }
+
+    def inputs(self):
+        return {'state': 'parca_state'}
+
+    def outputs(self):
+        return dict(_STAGE_02_INPUT_PORTS)
+
+    def update(self, state):
+        parca_state = state['state']
+        inp = extract_input(parca_state.sim_data, parca_state.cell_specs,
+                          debug=self.config.get('debug', False))
+        return {
+            'monomer_ids': inp.monomer_ids,
+            'translation_efficiencies': inp.translation_efficiencies,
+            'translation_eff_adjustments': inp.translation_eff_adjustments,
+            'balanced_translation_groups': inp.balanced_translation_groups,
+            'rna_ids': inp.rna_ids,
+            'cistron_ids': inp.cistron_ids,
+            'basal_rna_expression': inp.basal_rna_expression,
+            'rna_expression_adjustments': inp.rna_expression_adjustments,
+            'cistron_id_to_rna_indexes': inp.cistron_id_to_rna_indexes,
+            'rna_deg_rates': inp.rna_deg_rates,
+            'cistron_deg_rates': inp.cistron_deg_rates,
+            'rna_deg_rate_adjustments': inp.rna_deg_rate_adjustments,
+            'protein_deg_rates': inp.protein_deg_rates,
+            'protein_deg_rate_adjustments': inp.protein_deg_rate_adjustments,
+            'tf_to_active_inactive_conditions': inp.tf_to_active_inactive_conditions,
+        }
+
+
+class InputAdjustmentsStep(Step):
+    """Stage 2: PURE — every field is an explicit typed port.
+
+    No parca_state in inputs or outputs.  Operates entirely on
+    individually-named data ports extracted by ExtractForStage2Step.
+    """
+
+    config_schema = {
+        'debug': {'_type': 'boolean', '_default': False},
+    }
+
+    def inputs(self):
+        return dict(_STAGE_02_INPUT_PORTS)
+
+    def outputs(self):
+        return dict(_STAGE_02_OUTPUT_PORTS)
+
+    def update(self, state):
+        t0 = time.time()
+        inp = InputAdjustmentsInput(
+            debug=self.config.get('debug', False),
+            monomer_ids=state['monomer_ids'],
+            translation_efficiencies=state['translation_efficiencies'],
+            translation_eff_adjustments=state['translation_eff_adjustments'],
+            balanced_translation_groups=state['balanced_translation_groups'],
+            rna_ids=state['rna_ids'],
+            cistron_ids=state['cistron_ids'],
+            basal_rna_expression=state['basal_rna_expression'],
+            rna_expression_adjustments=state['rna_expression_adjustments'],
+            cistron_id_to_rna_indexes=state['cistron_id_to_rna_indexes'],
+            rna_deg_rates=state['rna_deg_rates'],
+            cistron_deg_rates=state['cistron_deg_rates'],
+            rna_deg_rate_adjustments=state['rna_deg_rate_adjustments'],
+            protein_deg_rates=state['protein_deg_rates'],
+            protein_deg_rate_adjustments=state['protein_deg_rate_adjustments'],
+            tf_to_active_inactive_conditions=state['tf_to_active_inactive_conditions'],
+        )
+        out = compute_input_adjustments(inp)
+        print(f"  Stage 2 (input_adjustments) completed in {time.time() - t0:.1f}s")
+        return {
+            'translation_efficiencies': out.translation_efficiencies,
+            'basal_rna_expression': out.basal_rna_expression,
+            'rna_deg_rates': out.rna_deg_rates,
+            'cistron_deg_rates': out.cistron_deg_rates,
+            'protein_deg_rates': out.protein_deg_rates,
+            'tf_to_active_inactive_conditions': out.tf_to_active_inactive_conditions,
+        }
+
+
+class MergeAfterStage2Step(Step):
+    """Helper: merge Stage 2 outputs back into parca_state."""
+
+    def inputs(self):
+        return {
+            'state': 'parca_state',
+            **_STAGE_02_OUTPUT_PORTS,
+        }
+
+    def outputs(self):
+        return {'state': 'parca_state'}
+
+    def update(self, state):
+        parca_state = state['state']
+        sim_data = parca_state.sim_data
+        cell_specs = parca_state.cell_specs
+
+        out = InputAdjustmentsOutput(
+            translation_efficiencies=state['translation_efficiencies'],
+            basal_rna_expression=state['basal_rna_expression'],
+            rna_deg_rates=state['rna_deg_rates'],
+            cistron_deg_rates=state['cistron_deg_rates'],
+            protein_deg_rates=state['protein_deg_rates'],
+            tf_to_active_inactive_conditions=state['tf_to_active_inactive_conditions'],
+        )
+        merge_output(sim_data, cell_specs, out)
+
+        return {
+            'state': ParcaState(sim_data=sim_data, cell_specs=cell_specs),
+        }
+
+
