@@ -232,7 +232,9 @@ def buildCombinedConditionCellSpecifications(
     """Combined-condition cell specs.  Mutates cell_specs in place and
     updates sim_data.process.transcription per-condition dicts."""
     for conditionKey in sim_data.condition_active_tfs:
-        if conditionKey == "basal":
+        if conditionKey == "basal" or not conditionKey:
+            # Skip basal (already fit) and the empty-string placeholder
+            # entry in the KB (perturbations is a bare "" for that one).
             continue
 
         fcData = {}

@@ -41,6 +41,10 @@ INPUT_PORTS = {
     'bulk_molecules':           'overwrite',
     'conditions':               'overwrite',
     'condition_to_doubling_time': 'overwrite',
+    'tf_to_active_inactive_conditions': 'overwrite',
+    'tf_to_fold_change':        'overwrite',
+    'condition_active_tfs':     'overwrite',
+    'condition_inactive_tfs':   'overwrite',
     'cell_specs':               'overwrite',
 }
 
