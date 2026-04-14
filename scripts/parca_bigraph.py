@@ -21,8 +21,10 @@ Usage::
 """
 
 import argparse
+import json
 import os
 import pickle
+import re
 import sys
 import time
 from pathlib import Path
@@ -73,14 +75,37 @@ def main():
 
     t1 = time.time()
     print(f"\n[{time.strftime('%H:%M:%S')}] Running ParCa pipeline ...")
-    composite = build_parca_composite(
-        raw,
-        debug=(args.mode == 'fast'),
-        cpus=args.cpus,
-        cache_dir=cache_dir,
-    )
+    # Capture per-step timings by tee-ing the Step completion lines the
+    # Steps already emit ("  Step N (name) completed in X.Xs").
+    import io
+    import contextlib
+    captured = io.StringIO()
+    class _Tee:
+        def __init__(self, *streams): self.streams = streams
+        def write(self, s):
+            for st in self.streams: st.write(s)
+        def flush(self):
+            for st in self.streams: st.flush()
+    with contextlib.redirect_stdout(_Tee(sys.stdout, captured)):
+        composite = build_parca_composite(
+            raw,
+            debug=(args.mode == 'fast'),
+            cpus=args.cpus,
+            cache_dir=cache_dir,
+        )
     print(f"\n[{time.strftime('%H:%M:%S')}] Pipeline completed in "
           f"{time.time() - t1:.1f}s")
+
+    # Parse per-step timings from the captured stdout.
+    step_times = {}
+    for m in re.finditer(r'Step (\d) .*? completed in ([0-9.]+)s',
+                         captured.getvalue()):
+        step_times[f'step_{m.group(1)}'] = float(m.group(2))
+
+    runtimes_path = os.path.join(outdir, 'runtimes.json')
+    with open(runtimes_path, 'w') as f:
+        json.dump(step_times, f, indent=2, sort_keys=True)
+    print(f"    runtimes: {runtimes_path}")
 
     # Pickle the full store state — subsystem objects + top-level dicts +
     # cell_specs entries.  Strip the tick leaves (sequencing tokens, not
