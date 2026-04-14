@@ -1,23 +1,42 @@
-"""
-Step 4 — tf_condition_specs.  Build cell specifications for each
-transcription-factor active/inactive condition and combined conditions.
+"""Step 4 — tf_condition_specs.  Repeat the basal fit under each TF condition.
 
-Parallelizable across TFs via ``cpus``.  Mutates the live ``transcription``
-subsystem (its per-condition rna_expression, rna_synth_prob,
-cistron_expression, fit_cistron_expression dicts) and populates
-``cell_specs[<condition>]``.
+For every transcription-factor active/inactive state, and for the
+combined growth conditions (with_aa, acetate, succinate, no_oxygen),
+apply the fold-change overrides to RNA expression and rerun the basal
+fit to produce condition-specific synthesis probabilities.
 
-Store paths wired by the composite
-----------------------------------
+Mathematical Model
+------------------
 
-READS (subsystems): transcription, translation, metabolism, complexation,
-  replication, mass, constants, growth_rate_parameters,
-  molecule_groups, molecule_ids, relation, bulk_molecules
-READS (data leaves): tf_to_active_inactive_conditions, conditions,
-  condition_to_doubling_time, tf_to_fold_change,
-  condition_active_tfs, condition_inactive_tfs, cell_specs
+Inputs:
+- transcription post-basal (rna_expression, rna_synth_prob).
+- tf_to_fold_change: {tf_id: {rna_id: log2_fc}} from the literature.
+- tf_to_active_inactive_conditions: which TFs to perturb (pruned to 1
+  in debug mode).
+- conditions / condition_active_tfs / condition_inactive_tfs: which TFs
+  are on/off in each combined condition.
+- condition_to_doubling_time for each condition's growth rate.
+- cell_specs['basal'] as the starting point.
 
-WRITES: transcription (mutated), cell_specs (with one entry per condition)
+Parameters:
+- cpus: conditions run in a multiprocessing pool of this size.
+- debug: restricts to one TF + the combined conditions.
+
+Calculation:
+- For each (tf, state) condition, apply 2^fold_change to rna_expression
+  on the TF's target RNAs, then rerun expressionConverge to recover
+  self-consistent rna_synth_prob.
+- For each combined condition, overlay the active-TF fold changes then
+  run the same convergence.
+- Condition-specific bulk distributions are sampled from the fitted
+  synthesis probabilities.
+
+Outputs:
+- transcription (mutated): rna_expression / rna_synth_prob /
+  cistron_expression / fit_cistron_expression now carry one entry per
+  fitted condition, not just 'basal'.
+- cell_specs (mutated): one entry per condition with bulk_average,
+  bulk_distribution, n_avg_copies, r_vector placeholder.
 """
 
 import time

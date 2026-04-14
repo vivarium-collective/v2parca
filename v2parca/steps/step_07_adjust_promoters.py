@@ -1,18 +1,35 @@
-"""
-Step 7 — adjust_promoters.  Tune ligand concentrations and build the RNAP
-recruitment parameters from the fitted promoter binding probabilities.
+"""Step 7 — adjust_promoters.  Back-solve ligand levels + RNAP recruitment.
 
-Store paths wired by the composite
-----------------------------------
+Given the fitted ``pPromoterBound`` from step 6, work backwards: find
+ligand concentrations and equilibrium reverse-rates that make the
+equilibrium solver produce those binding probabilities, and pre-compute
+the ``basal_prob`` / ``delta_prob`` columns the online RNAP recruitment
+model consumes each timestep.
 
-READS (subsystems):
-  transcription, transcription_regulation, equilibrium, metabolism,
-  replication, mass, constants, molecule_ids, molecule_groups, bulk_molecules
-READS (data leaves): cell_specs, conditions, condition_to_doubling_time
+Mathematical Model
+------------------
 
-WRITES: transcription_regulation (basal_prob + delta_prob, mutated),
-        metabolism (molecule_set_amounts, mutated),
-        equilibrium (reverse_rates, mutated).
+Inputs:
+- pPromoterBound[tf, condition] from step 6.
+- transcription, transcription_regulation, equilibrium, metabolism,
+  replication, mass, constants, molecule_ids, molecule_groups,
+  bulk_molecules.
+- cell_specs, conditions, condition_to_doubling_time.
+
+Calculation:
+- For each TF with a ligand, solve the equilibrium Hill equation
+  backwards: [L] = K_d · (P / (1 - P))^{1/n} given the target P.
+- Where the forward equilibrium doesn't match, adjust the equilibrium
+  reverse-rate constant to balance.
+- basal_prob[j]  = pPromoterBound · r_vector  evaluated at basal.
+- delta_prob[j, c] = (pPromoterBound[c] - pPromoterBound[basal]) ·
+  r_vector, giving the per-condition deviation that the online model
+  adds to basal_prob.
+
+Outputs:
+- transcription_regulation (mutated): basal_prob, delta_prob arrays.
+- metabolism (mutated): molecule_set_amounts overrides for ligands.
+- equilibrium (mutated): reverse_rates balanced against target P.
 """
 
 import time

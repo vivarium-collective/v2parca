@@ -1,26 +1,45 @@
-"""
-Stage 5: fit_condition — Calculate bulk distributions and translation
-supply rates for every condition.
+"""Step 5 — fit_condition.  Bulk-molecule distributions + translation supply.
 
-Three public functions:
-    extract_input(sim_data, cell_specs, **kwargs) -> FitConditionInput
-    compute_fit_condition(inp) -> FitConditionOutput
-    merge_output(sim_data, cell_specs, out)
+The pipeline's heavy step (~60–70 min at cpus=2). For every condition,
+sample N_SEEDS synthetic cells, propagate them through the
+complexation / equilibrium / two-component-system solvers to steady
+state, and record the mean and standard deviation of every bulk
+molecule count. Also computes the per-amino-acid translation supply
+rate each condition requires to hit its observed doubling time.
 
-For each condition this stage:
-1. Instantiates N_SEEDS cells with RNA/protein counts drawn from mass-
-   based distributions
-2. Runs complexation, equilibrium, and two-component-system processes
-   to steady state
-3. Collects mean/std of all bulk molecule counts
-4. Computes translation amino-acid supply rates
+Mathematical Model
+------------------
 
-NOTE: calculateBulkDistributions and calculateTranslationSupply use
-sim_data process objects (equilibrium solver, two-component system,
-stochastic complexation) that have not yet been decomposed into pure
-data.  They are accessed through the read-only ``sim_data_ref`` in
-FitConditionInput.  A future refactoring will extract these into
-explicit data.
+Inputs:
+- transcription, translation, complexation, equilibrium,
+  two_component_system subsystems (post–step 4).
+- mass, constants, molecule_groups, molecule_ids, relation,
+  bulk_molecules, growth_rate_parameters.
+- cell_specs[<condition>] entries produced by step 4.
+
+Parameters:
+- N_SEEDS (module constant): stochastic sample count per condition.
+- cpus: conditions distribute across a multiprocessing pool.
+
+Calculation (per condition):
+- Sample initial RNA and protein counts from the fitted expression
+  distributions conditioned on mass.
+- StochasticSystem (arrow) integrates complexation reactions to
+  equilibrium.
+- Equilibrium + two_component_system solvers produce macromolecule /
+  ligand-complex concentrations.
+- Aggregate mean_counts, std_counts, n_avg_copies across seeds.
+- calculateTranslationSupply: from mean counts + kcats compute the
+  amino-acid supply rate that matches the target dry-mass growth.
+
+Outputs:
+- cell_specs[<condition>] (mutated): bulk_average, bulk_distribution,
+  n_avg_copies filled in.
+- translation_supply_rate: {condition: array over 21 amino acids}.
+
+Note: the complexation, equilibrium, and two-component-system solvers
+are still sim_data-shaped objects (live references), not pure data — a
+pending refactor.
 """
 
 from stochastic_arrow import StochasticSystem

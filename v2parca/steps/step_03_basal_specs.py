@@ -1,41 +1,41 @@
-"""
-Step 3 — basal_specs.  Build basal cell specifications.
+"""Step 3 — basal_specs.  Fit the minimal-medium (basal) condition.
 
-Runs ``expressionConverge`` to fit basal RNA expression + synthesis
-probabilities, then sets ppGpp-regulated expression, fits endoRNase Km
-values, and fits the growth-associated-maintenance cost.
+Iteratively fits RNA synthesis probabilities so that the steady-state RNA
+distribution matches measured RNA-seq expression, then calibrates a few
+derived kinetic parameters (endoRNase Michaelis constants, ppGpp-regulated
+expression tables, the growth-associated ATP maintenance cost). Everything
+in the pipeline downstream of this step assumes these basal fits hold.
 
-All coupling to ``sim_data`` is threaded through explicit subsystem-object
-ports and data-leaf ports — no ``sim_data`` or ``cell_specs`` blob is
-passed.  Inside ``update()`` a minimal ``sim_data``-shaped facade is built
-from port values purely to satisfy the legacy sub-function APIs; because
-the facade holds live references, mutations propagate back through the
-output ports.
+Mathematical Model
+------------------
 
-Store paths wired by the composite
-----------------------------------
+Inputs:
+- transcription.rna_expression (post–input_adjustments).
+- rna_decay.endoRNase counts + KM bounds.
+- mass + constants + growth_rate_parameters for the basal doubling time.
+- condition_to_doubling_time[basal].
+- cell_specs: mutated in place with a new 'basal' entry.
 
-READS (subsystems, live references):
-  ``transcription``                process / transcription
-  ``translation``                  process / translation
-  ``metabolism``                   process / metabolism
-  ``rna_decay``                    process / rna_decay
-  ``complexation``                 process / complexation
-  ``replication``                  process / replication
-  ``mass``                         mass
-  ``constants``                    constants
-  ``growth_rate_parameters``       growth_rate_parameters
-  ``molecule_groups``              molecule_groups
-  ``molecule_ids``                 molecule_ids
-  ``relation``                     relation
-  ``bulk_molecules``               internal_state / bulk_molecules
-READS (data leaves):
-  ``condition_to_doubling_time``   condition_to_doubling_time
-  ``cell_specs``                   cell_specs
+Parameters:
+- cpus: parallel seed count for expressionConverge's Monte-Carlo legs.
+- debug: short-circuits the outer ppGpp / Km / GAM fits for a quick path.
 
-WRITES (mutated subsystems + cell_specs entry):
-  ``transcription``, ``mass``, ``constants``, ``rna_decay``  — in place
-  ``cell_specs``                   cell_specs  (with new ``basal`` entry)
+Calculation:
+- expressionConverge (iterative): adjust rna_synth_prob until the implied
+  mRNA, tRNA, and rRNA levels reproduce rna_expression within tolerance.
+- setPpGppExpression: build ppGpp_aa / ppGpp_basal_expression tables for
+  the downstream ppGpp-regulated translation supply.
+- fitRnaDecayKm: solve for endoRNase KM values that reproduce the
+  measured mRNA half-lives under the fitted synthesis probabilities.
+- fitMaintenanceCosts: regress ATP consumption against dry mass to
+  recover the growth-associated maintenance coefficient.
+
+Outputs:
+- transcription (mutated): rna_synth_prob, ppGpp expression tables.
+- rna_decay (mutated): endoRNase KM values.
+- mass, constants (mutated): GAM coefficient + derived totals.
+- cell_specs['basal']: bulk_average, bulk_distribution, n_avg_copies,
+  r_vector placeholder for step 6.
 """
 
 import binascii

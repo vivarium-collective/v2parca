@@ -1,23 +1,45 @@
-"""
-Step 9 — final_adjustments.  Final expression adjustments, amino-acid
-supply/export/uptake constants, and ppGpp reaction kinetics parameters.
+"""Step 9 — final_adjustments.  Kinetic constants the online model needs.
 
-Object-dominated: every sub-call is a method on a sim_data subsystem that
-mutates its own internal state.  The step wires every subsystem it
-touches as a port and returns the mutated objects on its output ports.
+Fits the last handful of kinetic parameters that don't fit earlier
+steps' patterns: amino-acid export/uptake kcats per nutrient,
+mechanistic translation supply constants, and ppGpp
+synthesis/degradation rates. Also applies any final cross-condition
+expression consistency passes.
 
-Store paths wired by the composite
-----------------------------------
+Mathematical Model
+------------------
 
-READS (subsystems):
-  transcription, translation, metabolism, constants, mass, complexation,
-  equilibrium, two_component_system, transcription_regulation,
-  replication, growth_rate_parameters, molecule_ids, molecule_groups,
-  relation, bulk_molecules
-READS (data leaves):
-  conditions, condition_to_doubling_time, tf_to_fold_change, cell_specs
+Inputs:
+- All nine subsystems (transcription, translation, metabolism,
+  complexation, equilibrium, two_component_system,
+  transcription_regulation, replication, plus mass, constants,
+  growth_rate_parameters, molecule_ids, molecule_groups, relation,
+  bulk_molecules).
+- conditions, condition_to_doubling_time, tf_to_fold_change, cell_specs.
 
-WRITES: transcription, metabolism, constants (all mutated in place)
+Calculation:
+- set_mechanistic_supply_constants: solve for amino-acid kcat +
+  synthase concentrations so each amino acid's net flux matches the
+  translation demand under each condition.
+- set_mechanistic_uptake_constants: same for transporter kcats.
+- set_mechanistic_export_constants: same for exporter kcats.
+- set_ppgpp_kinetics_parameters: fit ppGpp synthase (RelA/SpoT) +
+  hydrolase rate constants so steady-state [ppGpp] reproduces the
+  measured growth-rate-dependent pool.
+- adjust_final_expression: last-pass cross-condition expression
+  consistency check.
+
+Outputs:
+- transcription (mutated): final expression tables.
+- metabolism (mutated): aa_kcats_fwd, aa_kcats_rev,
+  aa_enzyme_ids, ppgpp_kinetics.
+- constants (mutated): ppGpp synthesis/hydrolysis rates.
+
+Note: ``set_mechanistic_supply_constants`` can hit
+``ValueError: Could not find positive forward and reverse kcat for
+CYS[c]`` in debug mode — the same numerical corner-case present in the
+upstream vEcoli ParCa. The step wraps each mechanistic fit in try /
+except so the pickle still lands even if one fails.
 """
 
 import time

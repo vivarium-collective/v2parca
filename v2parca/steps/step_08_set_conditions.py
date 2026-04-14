@@ -1,25 +1,37 @@
-"""
-Step 8 — set_conditions.  Rescale mass for soluble metabolites per
-condition and populate per-nutrient dictionaries on transcription /
-translation / the top-level expected_dry_mass_increase_dict.
+"""Step 8 — set_conditions.  Build per-condition mass + expression tables.
 
-Port surface mirrors the subsystems accessed + the data leaves mutated.
-Previously split into Extract / PureCompute / Merge triplet; unified here
-now that the facade handles the sim_data-shape bridging.
+Turns the per-condition cell_specs into the flat lookup tables the
+simulation consumes each timestep: average cell dry mass, soluble-pool
+mass budget, expected dry-mass increase, and per-nutrient transcription
+/ translation overrides.
 
-Store paths wired by the composite
-----------------------------------
+Mathematical Model
+------------------
 
-READS (subsystems):
-  transcription, translation, metabolism, mass, constants,
-  growth_rate_parameters, getter
-READS (data leaves):
-  conditions, condition_to_doubling_time, cell_specs
+Inputs:
+- cell_specs[<condition>] for every fitted condition.
+- transcription, translation, metabolism (for getter functions).
+- mass, constants, growth_rate_parameters.
+- conditions, condition_to_doubling_time.
 
-WRITES:
-  transcription, translation (per-nutrient dicts populated),
-  cell_specs (updated avgCellDryMassInit + fitAvgSolublePoolMass + bulkContainer),
-  expected_dry_mass_increase_dict
+Calculation:
+- Rescale avgCellDryMassInit per condition so that expected growth over
+  the doubling time matches observed dry_mass.
+- Compute fitAvgSolublePoolMass by subtracting macromolecule mass from
+  avgCellDryMassInit.
+- bulkContainer: canonical bulk-molecule counts at t=0 for each
+  condition, sampled from the fitted distributions.
+- expected_dry_mass_increase_dict[nutrient]:
+    = avgCellDryMass · (2^(t/τ) - 1) / t    integrated over one cycle.
+- Per-nutrient dicts on transcription and translation: which RNAs and
+  which tRNAs the online model should emphasize under that medium.
+
+Outputs:
+- transcription (mutated): per-nutrient expression overrides.
+- translation (mutated): per-nutrient tRNA supply.
+- cell_specs (mutated): avgCellDryMassInit, fitAvgSolublePoolMass,
+  bulkContainer for every condition.
+- expected_dry_mass_increase_dict.
 """
 
 import time

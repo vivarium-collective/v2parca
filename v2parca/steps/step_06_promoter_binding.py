@@ -1,23 +1,41 @@
-"""
-Step 6 — promoter_binding.  Fit transcription-factor binding probabilities
-and their effect on RNA synthesis.
+"""Step 6 — promoter_binding.  Fit TF binding probabilities and recruitment.
 
-Uses CVXPY/ECOS to fit recruitment parameters ``r`` and binding
-probabilities ``P`` such that computed RNA synthesis matches the measured
-condition-specific synth probabilities.  Mutates the ``transcription`` and
-``transcription_regulation`` subsystems via the shared sub-function
-``fitPromoterBoundProbability``; writes ``r_vector`` / ``r_columns`` into
-``cell_specs["basal"]``.
+For each TF-promoter pair, solve a small convex optimization so that
+the RNA synthesis implied by (recruitment × binding) reproduces the
+condition-specific rna_synth_prob computed in step 4. This is what
+translates "TF is active" into "transcription goes up by X" in the
+online model.
 
-Store paths wired by the composite
-----------------------------------
+Mathematical Model
+------------------
 
-READS (subsystems):
-  transcription, transcription_regulation, equilibrium, replication,
-  mass, constants, molecule_ids, molecule_groups, bulk_molecules
-READS (data leaves): cell_specs, conditions, condition_to_doubling_time
+Inputs:
+- transcription.rna_synth_prob (per condition, from step 4).
+- transcription_regulation: TF-to-target matrix + equilibrium Kd's.
+- equilibrium, replication, mass, constants, molecule_ids,
+  molecule_groups, bulk_molecules (for sanity-checked counts).
+- cell_specs (per condition), conditions, condition_to_doubling_time.
 
-WRITES: transcription, transcription_regulation (mutated), cell_specs
+Parameters:
+- CVXPY solver: ECOS; warm-started per condition.
+
+Calculation:
+- For each RNA j and condition c, model:
+    synth_prob[j, c] = basal[j] + Σ_tf  r[j, tf] · P[tf, c]
+  where P[tf, c] is the probability TF is promoter-bound under c
+  (derived from equilibrium with its ligand) and r[j, tf] is the
+  recruitment strength.
+- Fit r (non-negative) and adjust P so the predicted synth_prob
+  matches the step-4 synth_prob in least-squares sense, with
+  regularization keeping r sparse.
+- fitPromoterBoundProbability does the heavy lifting; returns
+  r_vector, r_columns, pPromoterBound[tf, c].
+
+Outputs:
+- transcription (mutated): basal_prob placeholder for step 7.
+- transcription_regulation (mutated): pPromoterBound filled.
+- cell_specs['basal'] gets r_vector / r_columns entries.
+- pPromoterBound top-level dict: {(tf, condition): probability}.
 """
 
 import time
