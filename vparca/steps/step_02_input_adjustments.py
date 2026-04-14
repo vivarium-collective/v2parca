@@ -1,100 +1,49 @@
 """
-Stage 2: input_adjustments — Apply pre-fitted adjustments to translation
+Step 2 — input_adjustments.  Apply pre-fitted adjustments to translation
 efficiencies, RNA expression, and degradation rates.
 
-Three public functions:
-    extract_input(sim_data, cell_specs, **kwargs) -> InputAdjustmentsInput
-    compute_input_adjustments(inp) -> InputAdjustmentsOutput
-    merge_output(sim_data, cell_specs, out)
+Port-first design: the Step declares each sim_data leaf it reads or writes
+as an explicit port.  The composite wires each port to a path inside a
+nested bigraph store that mirrors sim_data's structure — no ``sim_data`` or
+``cell_specs`` object is passed between Steps.
 
-Pure sub-functions (no sim_data dependency):
-    adjust_translation_efficiencies
-    balance_translation_efficiencies
-    adjust_rna_expression
-    adjust_rna_deg_rates
-    adjust_protein_deg_rates
+Store paths wired by the composite (see ``vparca/composite.py``):
+
+    READS
+      monomer_ids                        process / translation / monomer_data / id
+      translation_efficiencies           process / translation / translation_efficiencies_by_monomer
+      translation_eff_adjustments        adjustments / translation_efficiencies_adjustments
+      balanced_translation_groups        adjustments / balanced_translation_efficiencies
+      rna_ids                            process / transcription / rna_data / id
+      cistron_ids                        process / transcription / cistron_data / id
+      basal_rna_expression               process / transcription / rna_expression / basal
+      rna_expression_adjustments         adjustments / rna_expression_adjustments
+      cistron_id_to_rna_indexes          process / transcription / cistron_id_to_rna_indexes_map
+      rna_deg_rates                      process / transcription / rna_data / deg_rate
+      cistron_deg_rates                  process / transcription / cistron_data / deg_rate
+      rna_deg_rate_adjustments           adjustments / rna_deg_rates_adjustments
+      protein_deg_rates                  process / translation / monomer_data / deg_rate
+      protein_deg_rate_adjustments       adjustments / protein_deg_rates_adjustments
+      tf_to_active_inactive_conditions   tf_to_active_inactive_conditions
+
+    WRITES (same paths, round-trip for the 5 mutated arrays + optional TF dict)
+      translation_efficiencies           process / translation / translation_efficiencies_by_monomer
+      basal_rna_expression               process / transcription / rna_expression / basal
+      rna_deg_rates                      process / transcription / rna_data / deg_rate
+      cistron_deg_rates                  process / transcription / cistron_data / deg_rate
+      protein_deg_rates                  process / translation / monomer_data / deg_rate
+      tf_to_active_inactive_conditions   tf_to_active_inactive_conditions (conditional)
+
+All sub-functions below are **pure**: numpy-only, no sim_data, no side
+effects.  The Step simply assembles its inputs, calls them, and emits its
+outputs by port name.
 """
+
+import time
 
 import numpy as np
 
-from vparca.types import (
-    InputAdjustmentsInput,
-    InputAdjustmentsOutput,
-)
-
-
-import time
 from process_bigraph import Step
-
-from vparca.state import ParcaState
-
-# ============================================================================
-# Extract / Merge
-# ============================================================================
-
-
-def extract_input(sim_data, cell_specs, **kwargs) -> InputAdjustmentsInput:
-    """Pull specific data from sim_data into a typed dataclass."""
-    transcription = sim_data.process.transcription
-    translation = sim_data.process.translation
-
-    # Pre-compute the cistron-to-RNA mapping as a plain dict
-    cistron_ids = transcription.cistron_data["id"]
-    cistron_id_to_rna_indexes = {}
-    for cid in cistron_ids:
-        cistron_id_to_rna_indexes[cid] = transcription.cistron_id_to_rna_indexes(cid)
-
-    return InputAdjustmentsInput(
-        debug=kwargs.get("debug", False),
-        # Translation efficiencies
-        monomer_ids=translation.monomer_data["id"],
-        translation_efficiencies=translation.translation_efficiencies_by_monomer.copy(),
-        translation_eff_adjustments=dict(
-            sim_data.adjustments.translation_efficiencies_adjustments
-        ),
-        balanced_translation_groups=list(
-            sim_data.adjustments.balanced_translation_efficiencies
-        ),
-        # RNA expression
-        rna_ids=transcription.rna_data["id"],
-        cistron_ids=cistron_ids,
-        basal_rna_expression=transcription.rna_expression["basal"].copy(),
-        rna_expression_adjustments=dict(
-            sim_data.adjustments.rna_expression_adjustments
-        ),
-        cistron_id_to_rna_indexes=cistron_id_to_rna_indexes,
-        # Degradation rates
-        rna_deg_rates=transcription.rna_data.struct_array["deg_rate"].copy(),
-        cistron_deg_rates=transcription.cistron_data.struct_array["deg_rate"].copy(),
-        rna_deg_rate_adjustments=dict(
-            sim_data.adjustments.rna_deg_rates_adjustments
-        ),
-        protein_deg_rates=translation.monomer_data.struct_array["deg_rate"].copy(),
-        protein_deg_rate_adjustments=dict(
-            sim_data.adjustments.protein_deg_rates_adjustments
-        ),
-        # TF conditions
-        tf_to_active_inactive_conditions=dict(
-            sim_data.tf_to_active_inactive_conditions
-        ),
-    )
-
-
-def merge_output(sim_data, cell_specs, out: InputAdjustmentsOutput):
-    """Write computed results back into sim_data."""
-    transcription = sim_data.process.transcription
-    translation = sim_data.process.translation
-
-    translation.translation_efficiencies_by_monomer[:] = out.translation_efficiencies
-    transcription.rna_expression["basal"][:] = out.basal_rna_expression
-    transcription.rna_data.struct_array["deg_rate"][:] = out.rna_deg_rates
-    transcription.cistron_data.struct_array["deg_rate"][:] = out.cistron_deg_rates
-    translation.monomer_data.struct_array["deg_rate"][:] = out.protein_deg_rates
-
-    if out.tf_to_active_inactive_conditions is not None:
-        sim_data.tf_to_active_inactive_conditions = (
-            out.tf_to_active_inactive_conditions
-        )
 
 
 # ============================================================================
@@ -274,140 +223,49 @@ def adjust_protein_deg_rates(monomer_ids, rates, adjustments):
 # ============================================================================
 
 
-def compute_input_adjustments(inp: InputAdjustmentsInput) -> InputAdjustmentsOutput:
-    """
-    Pure function: apply all input adjustments.
+# ============================================================================
+# Step class — one port per leaf
+# ============================================================================
 
-    No sim_data, no cell_specs, no side effects.
-    """
-    # Debug mode: limit TF conditions
-    tf_conditions = None
-    if inp.debug:
-        print(
-            "Warning: Running the Parca in debug mode"
-            " - not all conditions will be fit"
-        )
-        key = list(inp.tf_to_active_inactive_conditions.keys())[0]
-        tf_conditions = {key: inp.tf_to_active_inactive_conditions[key]}
-
-    # Translation efficiencies
-    eff = adjust_translation_efficiencies(
-        inp.monomer_ids, inp.translation_efficiencies, inp.translation_eff_adjustments
-    )
-    eff = balance_translation_efficiencies(
-        inp.monomer_ids, eff, inp.balanced_translation_groups
-    )
-
-    # RNA expression
-    expr = adjust_rna_expression(
-        inp.rna_ids,
-        inp.cistron_ids,
-        inp.basal_rna_expression,
-        inp.rna_expression_adjustments,
-        inp.cistron_id_to_rna_indexes,
-    )
-
-    # RNA degradation rates
-    rna_deg, cistron_deg = adjust_rna_deg_rates(
-        inp.rna_ids,
-        inp.cistron_ids,
-        inp.rna_deg_rates,
-        inp.cistron_deg_rates,
-        inp.rna_deg_rate_adjustments,
-        inp.cistron_id_to_rna_indexes,
-    )
-
-    # Protein degradation rates
-    prot_deg = adjust_protein_deg_rates(
-        inp.monomer_ids, inp.protein_deg_rates, inp.protein_deg_rate_adjustments
-    )
-
-    return InputAdjustmentsOutput(
-        translation_efficiencies=eff,
-        basal_rna_expression=expr,
-        rna_deg_rates=rna_deg,
-        cistron_deg_rates=cistron_deg,
-        protein_deg_rates=prot_deg,
-        tf_to_active_inactive_conditions=tf_conditions,
-    )
-
-
-
-# ---------------------------------------------------------------------------
-# Stage 2: Input Adjustments — Extract / Pure / Merge
-# ---------------------------------------------------------------------------
-
-# Port schema shared by Extract (outputs) and InputAdjustmentsStep (inputs)
-_STEP_02_INPUT_PORTS = {
-    'monomer_ids': 'overwrite',
-    'translation_efficiencies': 'overwrite',
-    'translation_eff_adjustments': 'overwrite',
-    'balanced_translation_groups': 'overwrite',
-    'rna_ids': 'overwrite',
-    'cistron_ids': 'overwrite',
-    'basal_rna_expression': 'overwrite',
-    'rna_expression_adjustments': 'overwrite',
-    'cistron_id_to_rna_indexes': 'overwrite',
-    'rna_deg_rates': 'overwrite',
-    'cistron_deg_rates': 'overwrite',
-    'rna_deg_rate_adjustments': 'overwrite',
-    'protein_deg_rates': 'overwrite',
-    'protein_deg_rate_adjustments': 'overwrite',
+# Port schema — every entry is an explicit sim_data (or cell_specs) leaf
+# the Step reads or writes.  Names here are the port identifiers used by
+# the Composite to wire into store paths.  Value ``'overwrite'`` is the
+# bigraph-schema type used for replace-semantics on every leaf.
+INPUT_PORTS = {
+    'monomer_ids':                      'overwrite',
+    'translation_efficiencies':         'overwrite',
+    'translation_eff_adjustments':      'overwrite',
+    'balanced_translation_groups':      'overwrite',
+    'rna_ids':                          'overwrite',
+    'cistron_ids':                      'overwrite',
+    'basal_rna_expression':             'overwrite',
+    'rna_expression_adjustments':       'overwrite',
+    'cistron_id_to_rna_indexes':        'overwrite',
+    'rna_deg_rates':                    'overwrite',
+    'cistron_deg_rates':                'overwrite',
+    'rna_deg_rate_adjustments':         'overwrite',
+    'protein_deg_rates':                'overwrite',
+    'protein_deg_rate_adjustments':     'overwrite',
     'tf_to_active_inactive_conditions': 'overwrite',
 }
 
-# Port schema shared by InputAdjustmentsStep (outputs) and Merge (inputs)
-_STEP_02_OUTPUT_PORTS = {
-    'translation_efficiencies': 'overwrite',
-    'basal_rna_expression': 'overwrite',
-    'rna_deg_rates': 'overwrite',
-    'cistron_deg_rates': 'overwrite',
-    'protein_deg_rates': 'overwrite',
+OUTPUT_PORTS = {
+    'translation_efficiencies':         'overwrite',
+    'basal_rna_expression':             'overwrite',
+    'rna_deg_rates':                    'overwrite',
+    'cistron_deg_rates':                'overwrite',
+    'protein_deg_rates':                'overwrite',
     'tf_to_active_inactive_conditions': 'overwrite',
 }
-
-
-class ExtractForStep2Step(Step):
-    """Helper: extract fields from parca_state for the pure Stage 2 step."""
-
-    config_schema = {
-        'debug': {'_type': 'boolean', '_default': False},
-    }
-
-    def inputs(self):
-        return {'state': 'parca_state'}
-
-    def outputs(self):
-        return dict(_STEP_02_INPUT_PORTS)
-
-    def update(self, state):
-        parca_state = state['state']
-        inp = extract_input(parca_state.sim_data, parca_state.cell_specs,
-                          debug=self.config.get('debug', False))
-        return {
-            'monomer_ids': inp.monomer_ids,
-            'translation_efficiencies': inp.translation_efficiencies,
-            'translation_eff_adjustments': inp.translation_eff_adjustments,
-            'balanced_translation_groups': inp.balanced_translation_groups,
-            'rna_ids': inp.rna_ids,
-            'cistron_ids': inp.cistron_ids,
-            'basal_rna_expression': inp.basal_rna_expression,
-            'rna_expression_adjustments': inp.rna_expression_adjustments,
-            'cistron_id_to_rna_indexes': inp.cistron_id_to_rna_indexes,
-            'rna_deg_rates': inp.rna_deg_rates,
-            'cistron_deg_rates': inp.cistron_deg_rates,
-            'rna_deg_rate_adjustments': inp.rna_deg_rate_adjustments,
-            'protein_deg_rates': inp.protein_deg_rates,
-            'protein_deg_rate_adjustments': inp.protein_deg_rate_adjustments,
-            'tf_to_active_inactive_conditions': inp.tf_to_active_inactive_conditions,
-        }
 
 
 class InputAdjustmentsStep(Step):
-    """Stage 2: PURE — every field is an explicit typed port.
+    """Step 2 — input_adjustments.
 
-    No parca_state in inputs or outputs.  Operates entirely on
-    individually-named data ports extracted by ExtractForStep2Step.
+    Declares a port for every sim_data leaf read or written.  The composite
+    wires each port directly to the corresponding store path (see this
+    module's docstring for the read/write path table).  No ``sim_data`` or
+    ``cell_specs`` blob is passed through any port.
     """
 
     config_schema = {
@@ -415,72 +273,75 @@ class InputAdjustmentsStep(Step):
     }
 
     def inputs(self):
-        return dict(_STEP_02_INPUT_PORTS)
+        return dict(INPUT_PORTS)
 
     def outputs(self):
-        return dict(_STEP_02_OUTPUT_PORTS)
+        return dict(OUTPUT_PORTS)
 
     def update(self, state):
         t0 = time.time()
-        inp = InputAdjustmentsInput(
-            debug=self.config.get('debug', False),
-            monomer_ids=state['monomer_ids'],
-            translation_efficiencies=state['translation_efficiencies'],
-            translation_eff_adjustments=state['translation_eff_adjustments'],
-            balanced_translation_groups=state['balanced_translation_groups'],
-            rna_ids=state['rna_ids'],
-            cistron_ids=state['cistron_ids'],
-            basal_rna_expression=state['basal_rna_expression'],
-            rna_expression_adjustments=state['rna_expression_adjustments'],
-            cistron_id_to_rna_indexes=state['cistron_id_to_rna_indexes'],
-            rna_deg_rates=state['rna_deg_rates'],
-            cistron_deg_rates=state['cistron_deg_rates'],
-            rna_deg_rate_adjustments=state['rna_deg_rate_adjustments'],
-            protein_deg_rates=state['protein_deg_rates'],
-            protein_deg_rate_adjustments=state['protein_deg_rate_adjustments'],
-            tf_to_active_inactive_conditions=state['tf_to_active_inactive_conditions'],
+
+        # ---- debug switch: optionally trim TF conditions -------------------
+        tf_conditions_out = None
+        if self.config.get('debug', False):
+            print(
+                "  Step 2: debug mode — reducing tf_to_active_inactive_conditions"
+                " to a single key"
+            )
+            tf_cond = state['tf_to_active_inactive_conditions']
+            first_key = next(iter(tf_cond))
+            tf_conditions_out = {first_key: tf_cond[first_key]}
+
+        # ---- translation efficiencies -------------------------------------
+        eff = adjust_translation_efficiencies(
+            state['monomer_ids'],
+            # defensively copy the live array — the store holds the live ref
+            np.asarray(state['translation_efficiencies']).copy(),
+            state['translation_eff_adjustments'],
         )
-        out = compute_input_adjustments(inp)
-        print(f"  Stage 2 (input_adjustments) completed in {time.time() - t0:.1f}s")
-        return {
-            'translation_efficiencies': out.translation_efficiencies,
-            'basal_rna_expression': out.basal_rna_expression,
-            'rna_deg_rates': out.rna_deg_rates,
-            'cistron_deg_rates': out.cistron_deg_rates,
-            'protein_deg_rates': out.protein_deg_rates,
-            'tf_to_active_inactive_conditions': out.tf_to_active_inactive_conditions,
-        }
-
-
-class MergeAfterStep2Step(Step):
-    """Helper: merge Stage 2 outputs back into parca_state."""
-
-    def inputs(self):
-        return {
-            'state': 'parca_state',
-            **_STEP_02_OUTPUT_PORTS,
-        }
-
-    def outputs(self):
-        return {'state': 'parca_state'}
-
-    def update(self, state):
-        parca_state = state['state']
-        sim_data = parca_state.sim_data
-        cell_specs = parca_state.cell_specs
-
-        out = InputAdjustmentsOutput(
-            translation_efficiencies=state['translation_efficiencies'],
-            basal_rna_expression=state['basal_rna_expression'],
-            rna_deg_rates=state['rna_deg_rates'],
-            cistron_deg_rates=state['cistron_deg_rates'],
-            protein_deg_rates=state['protein_deg_rates'],
-            tf_to_active_inactive_conditions=state['tf_to_active_inactive_conditions'],
+        eff = balance_translation_efficiencies(
+            state['monomer_ids'],
+            eff,
+            state['balanced_translation_groups'],
         )
-        merge_output(sim_data, cell_specs, out)
 
-        return {
-            'state': ParcaState(sim_data=sim_data, cell_specs=cell_specs),
+        # ---- RNA expression -----------------------------------------------
+        expr = adjust_rna_expression(
+            state['rna_ids'],
+            state['cistron_ids'],
+            np.asarray(state['basal_rna_expression']).copy(),
+            state['rna_expression_adjustments'],
+            state['cistron_id_to_rna_indexes'],
+        )
+
+        # ---- RNA + cistron degradation rates ------------------------------
+        rna_deg, cistron_deg = adjust_rna_deg_rates(
+            state['rna_ids'],
+            state['cistron_ids'],
+            np.asarray(state['rna_deg_rates']).copy(),
+            np.asarray(state['cistron_deg_rates']).copy(),
+            state['rna_deg_rate_adjustments'],
+            state['cistron_id_to_rna_indexes'],
+        )
+
+        # ---- protein degradation rates ------------------------------------
+        prot_deg = adjust_protein_deg_rates(
+            state['monomer_ids'],
+            np.asarray(state['protein_deg_rates']).copy(),
+            state['protein_deg_rate_adjustments'],
+        )
+
+        print(f"  Step 2 (input_adjustments) completed in {time.time() - t0:.1f}s")
+
+        out = {
+            'translation_efficiencies': eff,
+            'basal_rna_expression':     expr,
+            'rna_deg_rates':            rna_deg,
+            'cistron_deg_rates':        cistron_deg,
+            'protein_deg_rates':        prot_deg,
         }
+        if tf_conditions_out is not None:
+            out['tf_to_active_inactive_conditions'] = tf_conditions_out
+        return out
 
 

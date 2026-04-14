@@ -1,22 +1,20 @@
 """
-Process-bigraph Step classes for the ParCa pipeline, one module per stage.
+Process-bigraph Step classes for the ParCa pipeline, one module per step.
 
-Each stage module exposes its Step class(es) alongside the
-``extract_input`` / ``compute_*`` / ``merge_output`` functions that
-do the actual work.  Pure stages (2, 8) are decomposed into an
-``Extract → Compute → Merge`` triplet of Steps so the compute Step
-has only explicit typed ports.
+Each step module exposes its Step class and the pure helpers it delegates
+to.  Every Step declares **leaf-level ports**: one port per sim_data (or
+cell_specs) field it reads or writes.  The composite wires port names to
+store paths in a nested bigraph that mirrors sim_data's structure.
 
-``ALL_STEP_CLASSES`` is the flat registry used by
-``process_bigraph.allocate_core(top=...)``.
+NOTE: this is mid-redesign.  Step 2 (``InputAdjustmentsStep``) has been
+converted to the leaf-port model.  Steps 1, 3–9 still use the older
+``extract_input`` / ``merge_output`` wrappers around a ``ParcaState`` blob;
+they will be converted next.  ``ALL_STEP_CLASSES`` currently reflects the
+transitional state.
 """
 
 from vparca.steps.step_01_initialize import InitializeStep
-from vparca.steps.step_02_input_adjustments import (
-    ExtractForStep2Step,
-    InputAdjustmentsStep,
-    MergeAfterStep2Step,
-)
+from vparca.steps.step_02_input_adjustments import InputAdjustmentsStep
 from vparca.steps.step_03_basal_specs import BasalSpecsStep
 from vparca.steps.step_04_tf_condition_specs import TfConditionSpecsStep
 from vparca.steps.step_05_fit_condition import FitConditionStep
@@ -32,14 +30,13 @@ from vparca.steps.step_09_final_adjustments import FinalAdjustmentsStep
 
 ALL_STEP_CLASSES = {
     'InitializeStep': InitializeStep,
-    'ExtractForStep2Step': ExtractForStep2Step,
     'InputAdjustmentsStep': InputAdjustmentsStep,
-    'MergeAfterStep2Step': MergeAfterStep2Step,
     'BasalSpecsStep': BasalSpecsStep,
     'TfConditionSpecsStep': TfConditionSpecsStep,
     'FitConditionStep': FitConditionStep,
     'PromoterBindingStep': PromoterBindingStep,
     'AdjustPromotersStep': AdjustPromotersStep,
+    # step 8 is still on the old extract/compute/merge triplet
     'ExtractForStep8Step': ExtractForStep8Step,
     'SetConditionsStep': SetConditionsStep,
     'MergeAfterStep8Step': MergeAfterStep8Step,
@@ -50,9 +47,7 @@ ALL_STEP_CLASSES = {
 __all__ = [
     'ALL_STEP_CLASSES',
     'InitializeStep',
-    'ExtractForStep2Step',
     'InputAdjustmentsStep',
-    'MergeAfterStep2Step',
     'BasalSpecsStep',
     'TfConditionSpecsStep',
     'FitConditionStep',
