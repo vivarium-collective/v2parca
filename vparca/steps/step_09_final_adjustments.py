@@ -55,6 +55,9 @@ INPUT_PORTS = {
     'condition_active_tfs':     'overwrite',
     'condition_inactive_tfs':   'overwrite',
     'cell_specs':               'overwrite',
+    # set_mechanistic_supply_constants reads sim_data.translation_supply_rate
+    # which step 5 populates per-nutrient.
+    'translation_supply_rate':  'overwrite',
     # calculate_attenuation reads sim_data.pPromoterBound (set by step 6)
     'pPromoterBound':           'overwrite',
     # create_bulk_container uses external_state.exchange_data_from_media
