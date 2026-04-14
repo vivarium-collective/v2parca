@@ -3,7 +3,7 @@
 ParCa Pipeline as Process-Bigraph Steps
 ========================================
 
-Runs the full vParCa pipeline — 9 Steps wired to a nested bigraph store
+Runs the full v2parca pipeline — 9 Steps wired to a nested bigraph store
 mirroring ``SimulationDataEcoli``'s structure — and pickles the final
 store state.
 
@@ -32,8 +32,8 @@ from pathlib import Path
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from vparca.composite import build_parca_composite
-from vparca.reconstruction.ecoli.knowledge_base_raw import KnowledgeBaseEcoli
+from v2parca.composite import build_parca_composite
+from v2parca.reconstruction.ecoli.knowledge_base_raw import KnowledgeBaseEcoli
 
 
 def main():
@@ -71,7 +71,7 @@ def main():
     cache_dir = args.cache_dir or os.path.join(outdir, "cache")
     os.makedirs(cache_dir, exist_ok=True)
 
-    print(f"\n{'=' * 60}\n  vParCa — {args.mode} mode\n{'=' * 60}")
+    print(f"\n{'=' * 60}\n  v2parca — {args.mode} mode\n{'=' * 60}")
 
     resume_state = None
     if args.resume_from_step > 1:
@@ -97,7 +97,7 @@ def main():
     #   --resume-from-step N --resume-pickle <outdir>/checkpoint_step_<N-1>.pkl
     # No-op when --resume-from-step > 1 (we already have a checkpoint).
     if args.resume_from_step <= 1:
-        from vparca.steps import ALL_STEP_CLASSES
+        from v2parca.steps import ALL_STEP_CLASSES
         STEP_NUM_BY_CLASS = {
             'InitializeStep': 1, 'InputAdjustmentsStep': 2, 'BasalSpecsStep': 3,
             'TfConditionSpecsStep': 4, 'FitConditionStep': 5,

@@ -1,5 +1,5 @@
 """
-Port-surface / wiring tests for vParCa.
+Port-surface / wiring tests for v2parca.
 
 These tests validate the *static* port-first architecture without running
 the full ParCa pipeline (which takes hours even in debug mode):
@@ -21,25 +21,25 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from vparca.composite import STORE_PATH
-from vparca.schema import PARCA_TYPES
-from vparca.steps import ALL_STEP_CLASSES
-from vparca.steps.step_01_initialize        import OUTPUT_PORTS as S1_OUT
-from vparca.steps.step_02_input_adjustments import (
+from v2parca.composite import STORE_PATH
+from v2parca.schema import PARCA_TYPES
+from v2parca.steps import ALL_STEP_CLASSES
+from v2parca.steps.step_01_initialize        import OUTPUT_PORTS as S1_OUT
+from v2parca.steps.step_02_input_adjustments import (
     INPUT_PORTS as S2_IN, OUTPUT_PORTS as S2_OUT)
-from vparca.steps.step_03_basal_specs       import (
+from v2parca.steps.step_03_basal_specs       import (
     INPUT_PORTS as S3_IN, OUTPUT_PORTS as S3_OUT)
-from vparca.steps.step_04_tf_condition_specs import (
+from v2parca.steps.step_04_tf_condition_specs import (
     INPUT_PORTS as S4_IN, OUTPUT_PORTS as S4_OUT)
-from vparca.steps.step_05_fit_condition     import (
+from v2parca.steps.step_05_fit_condition     import (
     INPUT_PORTS as S5_IN, OUTPUT_PORTS as S5_OUT)
-from vparca.steps.step_06_promoter_binding  import (
+from v2parca.steps.step_06_promoter_binding  import (
     INPUT_PORTS as S6_IN, OUTPUT_PORTS as S6_OUT)
-from vparca.steps.step_07_adjust_promoters  import (
+from v2parca.steps.step_07_adjust_promoters  import (
     INPUT_PORTS as S7_IN, OUTPUT_PORTS as S7_OUT)
-from vparca.steps.step_08_set_conditions    import (
+from v2parca.steps.step_08_set_conditions    import (
     INPUT_PORTS as S8_IN, OUTPUT_PORTS as S8_OUT)
-from vparca.steps.step_09_final_adjustments import (
+from v2parca.steps.step_09_final_adjustments import (
     INPUT_PORTS as S9_IN, OUTPUT_PORTS as S9_OUT)
 
 
@@ -80,7 +80,7 @@ def test_every_declared_port_has_a_store_path(step_n):
     for port in list(ins) + list(outs):
         assert port in STORE_PATH, (
             f"Step {step_n} declares port {port!r} but STORE_PATH has no "
-            f"entry — add it to vparca/composite.py::STORE_PATH"
+            f"entry — add it to v2parca/composite.py::STORE_PATH"
         )
 
 
@@ -148,7 +148,7 @@ def test_build_parca_composite_constructs_with_mock_raw_data():
     at construction time; ``run_steps_on_init=True`` fires the DAG, so
     we instead assert the exception is raised inside Step 1 rather than
     during spec validation or wiring)."""
-    from vparca.composite import build_parca_composite
+    from v2parca.composite import build_parca_composite
 
     raw = MagicMock(spec=[])  # no attributes — forces Step 1 to raise
     try:

@@ -1,4 +1,4 @@
-# vParCa Port Map — per-step sim_data leaves
+# v2parca Port Map — per-step sim_data leaves
 
 > **Historical reference.**  This document was derived from the
 > `extract_input()` / `merge_output()` functions *before* they were
@@ -8,7 +8,7 @@
 >
 > The **live port manifests** that actually drive the composite are
 > ``INPUT_PORTS`` / ``OUTPUT_PORTS`` at the top of every
-> `vparca/steps/step_NN_*.py`; they operate at the coarser
+> `v2parca/steps/step_NN_*.py`; they operate at the coarser
 > **subsystem-object + top-level-dict** granularity (one port per
 > `sim_data` subsystem the step reads/writes, plus one port per
 > top-level data dict).  Both views are consistent — the coarse port

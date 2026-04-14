@@ -1,11 +1,11 @@
-# vParCa
+# v2parca
 
 A **process-bigraph migration of the E. coli Parameter Calculator (ParCa)**.
 
 The ParCa transforms raw knowledge-base flat files into a fitted `SimulationDataEcoli`
 object that parameterizes the whole-cell model. Traditionally it runs as a single
 monolithic `fitSimData_1()` that mutates a deeply nested `sim_data` object across
-nine sequential stages. vParCa decomposes each stage into a `process_bigraph.Step`
+nine sequential stages. v2parca decomposes each stage into a `process_bigraph.Step`
 with **explicit, named input and output ports**, so the data flowing between stages
 is no longer hidden inside `sim_data` — it's wired through the Composite.
 
@@ -14,7 +14,7 @@ did the same decomposition for the simulation processes.
 
 ## Architecture
 
-vParCa is a **port-first, nested-store** pipeline.  The composite's state
+v2parca is a **port-first, nested-store** pipeline.  The composite's state
 is a bigraph tree that mirrors `SimulationDataEcoli`'s own structure —
 subsystem objects (`Transcription`, `Mass`, `Constants`, …) live at
 natural paths like `process/transcription` or `constants`, and pure-data
@@ -58,10 +58,10 @@ Pipeline overview:
 ```
 
 Each Step is a thin `process_bigraph.Step` subclass in
-`vparca/steps/step_NN_*.py` with two module-level dicts — `INPUT_PORTS`
+`v2parca/steps/step_NN_*.py` with two module-level dicts — `INPUT_PORTS`
 and `OUTPUT_PORTS` — and an `update(state)` method that reads port values
 from `state`, calls the ParCa sub-functions through a `SimpleNamespace`
-facade built by `vparca/steps/_facade.make_sim_data_facade`, and returns
+facade built by `v2parca/steps/_facade.make_sim_data_facade`, and returns
 a dict keyed by output-port name.  Subsystem objects carry their own
 mutations back out via their output ports.
 
@@ -71,7 +71,7 @@ data-level wires alone.  Opaque `tick_0..tick_9` leaves are wired as
 `tick_{N-1}` input → `tick_N` output per step, forcing a strict serial
 execution Step 1 → Step 9 as part of the Composite's initial DAG fire.
 
-**Bigraph-schema types** (`vparca/schema.py`) register Overwrite
+**Bigraph-schema types** (`v2parca/schema.py`) register Overwrite
 subclasses named `sim_data.transcription`, `sim_data.mass`, etc., so the
 port manifests document which kind of Python object lives at each
 subsystem leaf.  Today they're behaviorally identical to `overwrite`;
@@ -79,10 +79,10 @@ future work can hook dispatch (serialize, diff) per type.
 
 ## Layout
 
-Everything lives under a single Python namespace: `vparca`.
+Everything lives under a single Python namespace: `v2parca`.
 
 ```
-vparca/
+v2parca/
   __init__.py
   composite.py                   # build_parca_composite() / run_parca()
                                  # + STORE_PATH (port-name → nested-store path)
@@ -104,7 +104,7 @@ vparca/
     step_08_set_conditions.py
     step_09_final_adjustments.py
 
-  # Vendored vEcoli substrate — all under vparca/ so there's one namespace
+  # Vendored vEcoli substrate — all under v2parca/ so there's one namespace
   reconstruction/
     spreadsheets.py
     ecoli/
@@ -122,13 +122,13 @@ scripts/                         # parca_bigraph.py, parca_workflow.py
 docs/                            # PORT_MAP.md, DATA_FLOW.md
 ```
 
-Imports: `vparca.reconstruction.ecoli.knowledge_base_raw`,
-`vparca.wholecell.utils`, `vparca.ecoli.library.schema`, etc.  The substrate
-is not a separate installable package — it's part of vParCa.
+Imports: `v2parca.reconstruction.ecoli.knowledge_base_raw`,
+`v2parca.wholecell.utils`, `v2parca.ecoli.library.schema`, etc.  The substrate
+is not a separate installable package — it's part of v2parca.
 
 ## Running from raw data
 
-vParCa is self-contained: the raw KB (`reconstruction/ecoli/flat/`) and all vEcoli
+v2parca is self-contained: the raw KB (`reconstruction/ecoli/flat/`) and all vEcoli
 modules the ParCa needs are vendored inside this repo. You do **not** need
 vEcoli or vivarium-ecoli installed to run the ParCa.
 
@@ -145,8 +145,8 @@ python scripts/parca_workflow.py --mode fast --cpus 4
 Programmatic entry point:
 
 ```python
-from vparca.reconstruction.ecoli.knowledge_base_raw import KnowledgeBaseEcoli
-from vparca.composite import run_parca
+from v2parca.reconstruction.ecoli.knowledge_base_raw import KnowledgeBaseEcoli
+from v2parca.composite import run_parca
 
 raw = KnowledgeBaseEcoli(
     operons_on=True,
@@ -179,7 +179,7 @@ These catch port-manifest drift immediately rather than surfacing as an
 
 The comparison harness — which runs the original `fitSimData_1` from
 `vivarium-ecoli` and diffs `sim_data` after each stage — is the **only** part of
-vParCa that imports vEcoli. It's optional; install it with:
+v2parca that imports vEcoli. It's optional; install it with:
 
 ```bash
 pip install -e .[compare]
@@ -209,5 +209,5 @@ pip install -e .[compare]
 
 Extracted from `vivarium-ecoli`, branch `refactor-parca-again`, which split
 `fitSimData_1` into modular, typed stages. Intra-parca imports were rewritten
-from `reconstruction.ecoli.parca.*` to `vparca.*`; everything else imports the
+from `reconstruction.ecoli.parca.*` to `v2parca.*`; everything else imports the
 vendored substrate.

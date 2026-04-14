@@ -3,7 +3,7 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "vparca"
+name = "v2parca"
 version = "0.1.0"
 description = "Process-bigraph migration of the E. coli Parameter Calculator (ParCa) from vEcoli / vivarium-ecoli"
 requires-python = ">=3.10"
@@ -27,14 +27,14 @@ dependencies = [
 [project.optional-dependencies]
 test = ["pytest"]
 # For the comparison harness that imports a live vEcoli/vivarium-ecoli
-# alongside vParCa and diffs sim_data after each stage.
+# alongside v2parca and diffs sim_data after each stage.
 compare = ["vivarium-core"]
 
 [tool.setuptools.packages.find]
-include = ["vparca*"]
+include = ["v2parca*"]
 
 [tool.setuptools.package-data]
-"vparca.reconstruction.ecoli" = ["flat/**/*"]
+"v2parca.reconstruction.ecoli" = ["flat/**/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
