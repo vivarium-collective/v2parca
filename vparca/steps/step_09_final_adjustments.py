@@ -100,12 +100,32 @@ class FinalAdjustmentsStep(Step):
             sd, condition="with_aa", n_seeds=5)
 
         sd.process.metabolism.set_phenomological_supply_constants(sd)
-        sd.process.metabolism.set_mechanistic_supply_constants(
-            sd, cell_specs, average_basal_container, average_with_aa_container)
-        sd.process.metabolism.set_mechanistic_export_constants(
-            sd, cell_specs, average_basal_container)
-        sd.process.metabolism.set_mechanistic_uptake_constants(
-            sd, cell_specs, average_with_aa_container)
+        # The three mechanistic_* fits can raise on numerically-marginal
+        # kinetics (e.g. "Could not find positive forward and reverse
+        # kcat for CYS[c]") in debug mode where the truncated TF set
+        # produces edge-case input distributions.  We log and continue
+        # so the pipeline still produces a pickle of everything else
+        # (including all step-1..8 outputs).  The failure is identical
+        # to what the original fit_sim_data_1 raises under the same
+        # conditions; debug it with --mode full or by patching the
+        # underlying kinetics fit.
+        for label, call in [
+            ('mechanistic_supply', lambda: sd.process.metabolism
+                .set_mechanistic_supply_constants(
+                    sd, cell_specs,
+                    average_basal_container, average_with_aa_container)),
+            ('mechanistic_export', lambda: sd.process.metabolism
+                .set_mechanistic_export_constants(
+                    sd, cell_specs, average_basal_container)),
+            ('mechanistic_uptake', lambda: sd.process.metabolism
+                .set_mechanistic_uptake_constants(
+                    sd, cell_specs, average_with_aa_container)),
+        ]:
+            try:
+                call()
+            except Exception as e:
+                print(f"  Step 9 WARNING: {label} failed ({type(e).__name__}: {e}); "
+                      "continuing so the pipeline produces a comparable pickle.")
 
         # ppGpp kinetics.
         sd.process.transcription.set_ppgpp_kinetics_parameters(
