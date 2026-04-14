@@ -1,10 +1,19 @@
 # vParCa Port Map — per-step sim_data leaves
 
-Single source of truth for the port-first redesign. Derived by reading every
-`extract_input()` and `merge_output()` in `vparca/steps/step_NN_*.py` as of
-the last extract/merge-paradigm commit. Every leaf is given its **dotted
-path into sim_data** (or `cell_specs`), which becomes the store path the
-Step's port is wired to.
+> **Historical reference.**  This document was derived from the
+> `extract_input()` / `merge_output()` functions *before* they were
+> deleted.  It captures the **fine-grained** leaf-level read/write set
+> per step and is useful for understanding exactly which sim_data fields
+> each step touches internally.
+>
+> The **live port manifests** that actually drive the composite are
+> ``INPUT_PORTS`` / ``OUTPUT_PORTS`` at the top of every
+> `vparca/steps/step_NN_*.py`; they operate at the coarser
+> **subsystem-object + top-level-dict** granularity (one port per
+> `sim_data` subsystem the step reads/writes, plus one port per
+> top-level data dict).  Both views are consistent — the coarse port
+> surface still *reaches* every leaf listed below, just through an
+> object access inside `update()` rather than a named port.
 
 Path notation:
 - `process.transcription.rna_data.deg_rate` = attribute of `rna_data`'s
