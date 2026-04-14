@@ -124,9 +124,13 @@ CELL_SPECS_FIELDS = [
 # ---------------------------------------------------------------------------
 
 def _alias_vivarium_ecoli_modules() -> None:
-    """Register vendored ``v2parca.*`` modules as their top-level vEcoli
-    names so vivarium-ecoli pickles unpickle inside the v2parca env."""
+    """Register vendored ``v2parca.*`` modules under two legacy aliases:
+    (1) the top-level vEcoli names (``reconstruction.ecoli.*``, etc.)
+        so vivarium-ecoli pickles unpickle.
+    (2) the pre-rename ``vparca.*`` names so old v2parca checkpoints
+        pickled before the package was renamed still unpickle."""
     for modpath in (
+        'v2parca',
         'v2parca.reconstruction.ecoli.simulation_data',
         'v2parca.reconstruction.ecoli.dataclasses',
         'v2parca.wholecell.utils.units',
@@ -141,6 +145,9 @@ def _alias_vivarium_ecoli_modules() -> None:
             if name == top or name.startswith(top + '.'):
                 alias = name[len('v2parca.'):]
                 sys.modules.setdefault(alias, mod)
+        if name == 'v2parca' or name.startswith('v2parca.'):
+            legacy = 'vparca' + name[len('v2parca'):]
+            sys.modules.setdefault(legacy, mod)
 
 
 def _load_pickle(path: Optional[str]) -> Any:
