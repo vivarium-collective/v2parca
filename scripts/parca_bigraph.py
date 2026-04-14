@@ -106,10 +106,19 @@ def main():
         }
         # Track running checkpoint = accumulated outputs of all completed steps.
         running_checkpoint = {}
+        step_times_live = {}
+        runtimes_path = os.path.join(outdir, 'runtimes.json')
         def _wrap(cls, step_n):
             orig = cls.update
             def update(self, state):
+                t_step = time.time()
                 out = orig(self, state)
+                step_times_live[f'step_{step_n}'] = time.time() - t_step
+                try:
+                    with open(runtimes_path, 'w') as f:
+                        json.dump(step_times_live, f, indent=2, sort_keys=True)
+                except Exception as e:
+                    print(f"    WARN: runtimes write after step {step_n} failed: {e}")
                 running_checkpoint.update(out)
                 ckpt_path = os.path.join(outdir, f'checkpoint_step_{step_n}.pkl')
                 try:

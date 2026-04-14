@@ -295,32 +295,80 @@ def _fmt(x):
 # Per-step section builders
 # ---------------------------------------------------------------------------
 
+_STORE_PATH_CACHE: Optional[Dict[str, List[str]]] = None
+
+def _store_paths() -> Dict[str, List[str]]:
+    global _STORE_PATH_CACHE
+    if _STORE_PATH_CACHE is None:
+        try:
+            from v2parca.composite import STORE_PATH as _SP
+            _STORE_PATH_CACHE = dict(_SP)
+        except Exception:
+            _STORE_PATH_CACHE = {}
+    return _STORE_PATH_CACHE
+
+
+def _port_rows(ports: Dict[str, Any], store_paths: Dict[str, List[str]]) -> str:
+    """Render a port dict as a table: port name, store path, description."""
+    visible = [(k, v) for k, v in ports.items() if not k.startswith('tick_')]
+    tick_ports = [k for k in ports if k.startswith('tick_')]
+    if not visible:
+        return ('<p class="meta">(none — this step has no upstream '
+                'subsystem reads; it only consumes ordering tokens: '
+                f'<code>{", ".join(tick_ports) or "—"}</code>)</p>')
+    rows = ['<table class="ports"><tr>'
+            '<th>port</th><th>store path</th><th>role</th></tr>']
+    for k, v in visible:
+        path = store_paths.get(k)
+        path_str = '/' + '/'.join(path) if path else '<span class="meta">(not in STORE_PATH)</span>'
+        rows.append(
+            f'<tr><td><code>{k}</code></td>'
+            f'<td><code>{path_str}</code></td>'
+            f'<td class="meta">{v}</td></tr>'
+        )
+    rows.append('</table>')
+    if tick_ports:
+        rows.append(f'<p class="meta">Plus ordering tokens: '
+                    f'<code>{", ".join(tick_ports)}</code> — these enforce '
+                    'Step execution order in the bigraph but carry no data.</p>')
+    return '\n'.join(rows)
+
+
 def _port_table(module_name: str) -> str:
-    """Pull INPUT_PORTS / OUTPUT_PORTS from a step module and render
-    them side-by-side as the 'declared data flow' summary."""
+    """Render a step's declared data flow: prose header + per-direction
+    port tables showing port name, store path, and role."""
     try:
         m = importlib.import_module(module_name)
     except Exception as e:
         return f'<p class="meta">(port manifest unavailable: {e})</p>'
     ins  = getattr(m, 'INPUT_PORTS',  {}) or {}
     outs = getattr(m, 'OUTPUT_PORTS', {}) or {}
-    in_ports  = [k for k in ins  if not k.startswith('tick_')]
-    out_ports = [k for k in outs if not k.startswith('tick_')]
-    cols = max(len(in_ports), len(out_ports), 1)
-    rows = []
-    rows.append('<table><tr><th style="width:50%">Inputs (reads)</th>'
-                '<th style="width:50%">Outputs (writes)</th></tr>')
-    for i in range(cols):
-        ip = in_ports[i]  if i < len(in_ports)  else ''
-        op = out_ports[i] if i < len(out_ports) else ''
-        it = ins.get(ip, '')
-        ot = outs.get(op, '')
-        rows.append(
-            f'<tr><td><code>{ip}</code> <span class="meta">{it}</span></td>'
-            f'<td><code>{op}</code> <span class="meta">{ot}</span></td></tr>'
-        )
-    rows.append('</table>')
-    return '\n'.join(rows)
+    doc = (m.__doc__ or '').strip()
+    # Keep the first paragraph of the module docstring (if any) as context.
+    doc_para = doc.split('\n\n', 1)[0].replace('\n', ' ').strip() if doc else ''
+
+    intro = [
+        '<p class="meta">Each Step declares <code>INPUT_PORTS</code> '
+        '(stores it reads) and <code>OUTPUT_PORTS</code> (stores it writes). '
+        'Port names are resolved to absolute store paths via '
+        '<code>STORE_PATH</code> in <code>v2parca/composite.py</code>, and '
+        'the composite wires each port to the corresponding location in the '
+        'nested bigraph. The <em>role</em> column shows the description '
+        'given in the step module (e.g. <code>sim_data.transcription</code> '
+        'means "mirrors the <code>transcription</code> subsystem on '
+        '<code>SimulationDataEcoli</code>"; <code>overwrite</code> means '
+        'the port replaces whatever value lives at that store).</p>'
+    ]
+    if doc_para:
+        intro.append(f'<p><strong>Step purpose:</strong> {doc_para}</p>')
+
+    sp = _store_paths()
+    parts = list(intro)
+    parts.append(f'<h4>Inputs — reads ({sum(1 for k in ins if not k.startswith("tick_"))})</h4>')
+    parts.append(_port_rows(ins, sp))
+    parts.append(f'<h4>Outputs — writes ({sum(1 for k in outs if not k.startswith("tick_"))})</h4>')
+    parts.append(_port_rows(outs, sp))
+    return '\n'.join(parts)
 
 
 def _section_runtime(vt: Optional[float], ot: Optional[float]) -> str:
