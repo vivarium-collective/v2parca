@@ -82,22 +82,32 @@ def build_parca_composite(raw_data, debug=False, cpus=1,
                           variable_elongation_transcription=True,
                           variable_elongation_translation=False,
                           disable_ribosome_capacity_fitting=False,
-                          disable_rnapoly_capacity_fitting=False):
-    """Build a Composite that runs the full 9-step ParCa pipeline.
+                          disable_rnapoly_capacity_fitting=False,
+                          resume_from_step=1, resume_state=None):
+    """Build a Composite that runs the 9-step ParCa pipeline.
 
     Args:
         raw_data: a ``KnowledgeBaseEcoli`` instance.  Passed through
             InitializeStep's config to keep bigraph-schema from walking
             its nested KB internals at composite construction time.
-        debug:    if True, Step 2 reduces tf_to_active_inactive_conditions
-                  to a single key.
-        cpus:     parallelism for Step 4 and Step 5.
-        cache_dir: cache for Step 3's Km fitting (optional).
-        core:     optional pre-built core.
+            Required when ``resume_from_step <= 1``; ignored otherwise.
+        debug, cpus, cache_dir, *_elongation*, *_capacity_fitting:
+            forwarded to the relevant Step configs.
+        core: optional pre-built core.
+        resume_from_step: 1-9.  When > 1, steps 1..(N-1) are skipped and
+            the composite's initial store state is seeded from
+            ``resume_state`` (which must be a dict produced by a prior
+            run's ``composite.state``).  Used to debug late-pipeline
+            steps without re-running the expensive Step 5.
+        resume_state: store-state dict from a prior run, required when
+            ``resume_from_step > 1``.
     Returns:
         The ``Composite`` instance with the pipeline already executed.
         The final store state is at ``composite.state``.
     """
+    if resume_from_step > 1 and resume_state is None:
+        raise ValueError(
+            "resume_from_step > 1 requires resume_state from a prior run")
     if core is None:
         core = allocate_core(top=ALL_STEP_CLASSES)
         register_parca_schema(core)
@@ -139,66 +149,77 @@ def build_parca_composite(raw_data, debug=False, cpus=1,
     s8i, s8o = _wires(_s8_in.keys()), _wires(_s8_out.keys())
     s9i, s9o = _wires(_s9_in.keys()), _wires(_s9_out.keys())
 
-    spec = {
-        'run_steps_on_init': True,
-        'state': {
-            'initialize': {
-                '_type':   'step',
-                'address': 'local:InitializeStep',
-                'config':  {'raw_data': raw_data},
-                'inputs':  s1i,
-                'outputs': s1o,
-            },
-            'input_adjustments': {
-                '_type':   'step',
-                'address': 'local:InputAdjustmentsStep',
-                'config':  {'debug': debug},
-                'inputs':  s2i, 'outputs': s2o,
-            },
-            'basal_specs': {
-                '_type':   'step',
-                'address': 'local:BasalSpecsStep',
-                'config':  {**_elong, 'cache_dir': cache_dir},
-                'inputs':  s3i, 'outputs': s3o,
-            },
-            'tf_condition_specs': {
-                '_type':   'step',
-                'address': 'local:TfConditionSpecsStep',
-                'config':  {**_elong, 'cpus': cpus},
-                'inputs':  s4i, 'outputs': s4o,
-            },
-            'fit_condition': {
-                '_type':   'step',
-                'address': 'local:FitConditionStep',
-                'config':  {'cpus': cpus},
-                'inputs':  s5i, 'outputs': s5o,
-            },
-            'promoter_binding': {
-                '_type':   'step',
-                'address': 'local:PromoterBindingStep',
-                'config':  {},
-                'inputs':  s6i, 'outputs': s6o,
-            },
-            'adjust_promoters': {
-                '_type':   'step',
-                'address': 'local:AdjustPromotersStep',
-                'config':  {},
-                'inputs':  s7i, 'outputs': s7o,
-            },
-            'set_conditions': {
-                '_type':   'step',
-                'address': 'local:SetConditionsStep',
-                'config':  {'verbose': 1},
-                'inputs':  s8i, 'outputs': s8o,
-            },
-            'final_adjustments': {
-                '_type':   'step',
-                'address': 'local:FinalAdjustmentsStep',
-                'config':  {},
-                'inputs':  s9i, 'outputs': s9o,
-            },
+    # Each step slot.  We build them once and selectively include them
+    # below according to ``resume_from_step``.
+    step_slots = {
+        'initialize': {
+            '_type': 'step', 'address': 'local:InitializeStep',
+            'config': {'raw_data': raw_data},
+            'inputs': s1i, 'outputs': s1o,
+        },
+        'input_adjustments': {
+            '_type': 'step', 'address': 'local:InputAdjustmentsStep',
+            'config': {'debug': debug},
+            'inputs': s2i, 'outputs': s2o,
+        },
+        'basal_specs': {
+            '_type': 'step', 'address': 'local:BasalSpecsStep',
+            'config': {**_elong, 'cache_dir': cache_dir},
+            'inputs': s3i, 'outputs': s3o,
+        },
+        'tf_condition_specs': {
+            '_type': 'step', 'address': 'local:TfConditionSpecsStep',
+            'config': {**_elong, 'cpus': cpus},
+            'inputs': s4i, 'outputs': s4o,
+        },
+        'fit_condition': {
+            '_type': 'step', 'address': 'local:FitConditionStep',
+            'config': {'cpus': cpus},
+            'inputs': s5i, 'outputs': s5o,
+        },
+        'promoter_binding': {
+            '_type': 'step', 'address': 'local:PromoterBindingStep',
+            'config': {},
+            'inputs': s6i, 'outputs': s6o,
+        },
+        'adjust_promoters': {
+            '_type': 'step', 'address': 'local:AdjustPromotersStep',
+            'config': {},
+            'inputs': s7i, 'outputs': s7o,
+        },
+        'set_conditions': {
+            '_type': 'step', 'address': 'local:SetConditionsStep',
+            'config': {'verbose': 1},
+            'inputs': s8i, 'outputs': s8o,
+        },
+        'final_adjustments': {
+            '_type': 'step', 'address': 'local:FinalAdjustmentsStep',
+            'config': {},
+            'inputs': s9i, 'outputs': s9o,
         },
     }
+
+    STEP_ORDER = [
+        'initialize', 'input_adjustments', 'basal_specs', 'tf_condition_specs',
+        'fit_condition', 'promoter_binding', 'adjust_promoters',
+        'set_conditions', 'final_adjustments',
+    ]
+
+    state = {}
+    # Seed leaves from a prior run when resuming.  Skip composite-internal
+    # bookkeeping keys and the step slot keys themselves.
+    if resume_from_step > 1 and resume_state:
+        for k, v in resume_state.items():
+            if k in STEP_ORDER or k.startswith('_') or k == 'global_time':
+                continue
+            state[k] = v
+
+    # Include only steps from resume_from_step onward.
+    for i, name in enumerate(STEP_ORDER, start=1):
+        if i >= resume_from_step:
+            state[name] = step_slots[name]
+
+    spec = {'run_steps_on_init': True, 'state': state}
 
     return Composite(spec, core=core)
 

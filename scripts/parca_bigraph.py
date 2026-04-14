@@ -56,6 +56,12 @@ def main():
                              "(default: <outdir>/cache).")
     parser.add_argument("--no-operons", action="store_true",
                         help="Disable operons in the KB.")
+    parser.add_argument("--resume-from-step", type=int, default=1,
+                        help="Skip steps 1..N-1; load --resume-pickle as the "
+                             "initial composite state.  Use to debug late steps "
+                             "without re-running step 5 (~60 min).")
+    parser.add_argument("--resume-pickle", type=str, default=None,
+                        help="Pickle of composite.state from an earlier run.")
     args = parser.parse_args()
 
     outdir = os.path.abspath(args.outdir)
@@ -64,6 +70,15 @@ def main():
     os.makedirs(cache_dir, exist_ok=True)
 
     print(f"\n{'=' * 60}\n  vParCa — {args.mode} mode\n{'=' * 60}")
+
+    resume_state = None
+    if args.resume_from_step > 1:
+        if not args.resume_pickle:
+            raise SystemExit("--resume-from-step > 1 requires --resume-pickle")
+        print(f"[{time.strftime('%H:%M:%S')}] Loading resume state from "
+              f"{args.resume_pickle}")
+        with open(args.resume_pickle, 'rb') as f:
+            resume_state = pickle.load(f)
 
     t0 = time.time()
     print(f"[{time.strftime('%H:%M:%S')}] Loading raw_data (operons={not args.no_operons})")
@@ -92,6 +107,8 @@ def main():
             debug=(args.mode == 'fast'),
             cpus=args.cpus,
             cache_dir=cache_dir,
+            resume_from_step=args.resume_from_step,
+            resume_state=resume_state,
         )
     print(f"\n[{time.strftime('%H:%M:%S')}] Pipeline completed in "
           f"{time.time() - t1:.1f}s")

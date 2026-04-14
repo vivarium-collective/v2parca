@@ -54,6 +54,8 @@ INPUT_PORTS = {
     'condition_active_tfs':     'overwrite',
     'condition_inactive_tfs':   'overwrite',
     'cell_specs':               'overwrite',
+    # calculate_attenuation reads sim_data.pPromoterBound (set by step 6)
+    'pPromoterBound':           'overwrite',
 }
 
 OUTPUT_PORTS = {
