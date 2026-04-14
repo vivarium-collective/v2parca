@@ -210,12 +210,20 @@ def build_parca_composite(raw_data, debug=False, cpus=1,
 
     state = {}
     # Seed leaves from a prior run when resuming.  Skip composite-internal
-    # bookkeeping keys and the step slot keys themselves.
+    # bookkeeping keys and the step slot keys themselves.  Checkpoints are
+    # keyed by port name (from Step.update return dicts), but the composite's
+    # store expects values at their nested STORE_PATH locations — e.g. the
+    # 'transcription' port lives at ['process', 'transcription'].  Seed via
+    # STORE_PATH so step inputs find the values where their wires point.
     if resume_from_step > 1 and resume_state:
         for k, v in resume_state.items():
             if k in STEP_ORDER or k.startswith('_') or k == 'global_time':
                 continue
-            state[k] = v
+            path = STORE_PATH.get(k, [k])
+            cursor = state
+            for seg in path[:-1]:
+                cursor = cursor.setdefault(seg, {})
+            cursor[path[-1]] = v
 
     # Include only steps from resume_from_step onward.
     for i, name in enumerate(STEP_ORDER, start=1):

@@ -426,14 +426,20 @@ def build_graph() -> dict:
         subsystem, color = classify(step_name)
         cls_doc = (cls.__doc__ or '').strip() if cls is not None else ''
         mod_doc = (mod.__doc__ or '').strip()
-        doc = '\n\n'.join(d for d in (cls_doc, mod_doc) if d)
+        # Split Mathematical Model section out of module doc so the viewer
+        # renders it in the Mathematics panel (colored sub-blocks) rather
+        # than lumping it into the general Docstring panel.
+        mod_math, mod_rest = _extract_math_and_doc(mod_doc)
+        cls_math, cls_rest = _extract_math_and_doc(cls_doc)
+        math = '\n\n'.join(p for p in (cls_math, mod_math) if p)
+        doc  = '\n\n'.join(p for p in (cls_rest, mod_rest) if p)
         meta = {
             '_inputs':  in_schema,
             '_outputs': out_schema,
             'address':  f'local:{cls_name}',
             'config':   {},
             'doc':      doc,
-            'math':     '',
+            'math':     math,
             'class':    f'{mod_path}.{cls_name}',
             'role':     '',
             'method':   '',
