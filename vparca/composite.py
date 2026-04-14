@@ -1,338 +1,135 @@
 """
-Composite builder for the ParCa pipeline as process-bigraph Steps.
+Composite builder for the ParCa pipeline.
 
-All data flows through a registered ``'parca_state'`` type that wraps
-sim_data + cell_specs.  No Step declares ports named ``sim_data`` or
-``cell_specs``.
+Port-first design: every step declares a port per sim_data leaf it reads
+or writes, and the composite wires those ports directly to paths inside a
+nested bigraph store that mirrors sim_data's structure.  No ``sim_data``
+or ``cell_specs`` blob is carried through the pipeline — the store *is*
+the pipeline state.
 
-Pure stages (2 and 8) are decomposed into Extract → Compute → Merge
-triplets.  The Compute step has only explicit named ports — no
-``parca_state`` dependency.  Coupled stages (1, 3–7, 9) pass the full
-``parca_state`` through and expose intermediate results as named outputs.
+**This is the PoC composite** covering Step 1 (scatter) and Step 2
+(input_adjustments).  Steps 3–9 will be added after they are converted
+to the leaf-port style.
 
-Store chain::
+Store tree currently wired::
 
-    state_0 → [Stage 1] → state_1
-    state_1 → [Extract02] → s02_in/* → [InputAdj] → s02_out/*
-              → [Merge02 + state_1] → state_2
-    state_2 → [Stage 3] → state_3 + stage_03/*
-    state_3 → [Stage 4] → state_4 + stage_04/*
-    state_4 → [Stage 5] → state_5 + stage_05/*
-    state_5 → [Stage 6] → state_6 + stage_06/*
-    state_6 → [Stage 7] → state_7 + stage_07/*
-    state_7 → [Extract08] → s08_in/* → [SetCond] → s08_out/*
-              → [Merge08 + state_7] → state_8
-    state_8 → [Stage 9] → state_9
+    adjustments/
+        balanced_translation_efficiencies
+        protein_deg_rates_adjustments
+        rna_deg_rates_adjustments
+        rna_expression_adjustments
+        translation_efficiencies_adjustments
+    process/
+        transcription/
+            cistron_data/id
+            cistron_data/deg_rate
+            cistron_id_to_rna_indexes_map
+            rna_data/id
+            rna_data/deg_rate
+            rna_expression/basal
+        translation/
+            monomer_data/id
+            monomer_data/deg_rate
+            translation_efficiencies_by_monomer
+    tf_to_active_inactive_conditions
+    raw_data                        (input to Step 1)
 
-Provides:
-    ``register_parca_steps(core)`` — register types and all Step links
-    ``build_parca_composite(raw_data, core=None, **kwargs)`` — build and
-        return a Composite whose Steps execute the full ParCa pipeline
-    ``run_parca(raw_data, **kwargs)`` — convenience function that builds
-        the Composite, then returns the fitted ``sim_data``
+Step 1 writes every leaf above (raw_data stays as-is).  Step 2 reads them
+all, and writes back the 5 arrays + the TF dict that it mutates.  Dataflow
+is a pure DAG: Step 1 → store → Step 2 → store.
 """
 
 from process_bigraph import Composite, allocate_core
 
-from vparca.reconstruction.ecoli.simulation_data import SimulationDataEcoli
-from vparca.state import ParcaState, register_parca_types
+from vparca.schema import register_parca_schema
 from vparca.steps import ALL_STEP_CLASSES
 
 
-def register_parca_steps(core):
-    """Register the parca_state type and all Step classes with the core."""
-    register_parca_types(core)
-    core.register_links(ALL_STEP_CLASSES)
-    return core
+# ---------------------------------------------------------------------------
+# Store paths — single source of truth for port-to-path wiring.
+# ---------------------------------------------------------------------------
+
+# Keyed by port name (stable across Step 1's outputs and Step 2's inputs
+# where they overlap).  Value is the path list into the store tree.
+STORE_PATH = {
+    'monomer_ids':                      ['process', 'translation', 'monomer_data', 'id'],
+    'translation_efficiencies':         ['process', 'translation', 'translation_efficiencies_by_monomer'],
+    'translation_eff_adjustments':      ['adjustments', 'translation_efficiencies_adjustments'],
+    'balanced_translation_groups':      ['adjustments', 'balanced_translation_efficiencies'],
+    'rna_ids':                          ['process', 'transcription', 'rna_data', 'id'],
+    'cistron_ids':                      ['process', 'transcription', 'cistron_data', 'id'],
+    'basal_rna_expression':             ['process', 'transcription', 'rna_expression', 'basal'],
+    'rna_expression_adjustments':       ['adjustments', 'rna_expression_adjustments'],
+    'cistron_id_to_rna_indexes':        ['process', 'transcription', 'cistron_id_to_rna_indexes_map'],
+    'rna_deg_rates':                    ['process', 'transcription', 'rna_data', 'deg_rate'],
+    'cistron_deg_rates':                ['process', 'transcription', 'cistron_data', 'deg_rate'],
+    'rna_deg_rate_adjustments':         ['adjustments', 'rna_deg_rates_adjustments'],
+    'protein_deg_rates':                ['process', 'translation', 'monomer_data', 'deg_rate'],
+    'protein_deg_rate_adjustments':     ['adjustments', 'protein_deg_rates_adjustments'],
+    'tf_to_active_inactive_conditions': ['tf_to_active_inactive_conditions'],
+}
 
 
-def build_parca_composite(raw_data, core=None, **kwargs):
-    """Build a Composite that runs the full ParCa pipeline as Steps.
+def _wires(port_names):
+    """Produce a composite ``wires`` dict for the given ports."""
+    return {name: STORE_PATH[name] for name in port_names}
 
-    Steps execute in dependency order during ``Composite.__init__()``.
-    Each stage reads from ``state_<N-1>`` and writes to ``state_<N>``,
-    forming a DAG that enforces sequential execution (1 → 2 → ... → 9).
 
-    Pure stages (2, 8) are decomposed into Extract/Compute/Merge triplets
-    so the Compute step has only explicit typed ports.
+def build_parca_composite(raw_data, debug=False, core=None):
+    """Build a Composite that runs the PoC ParCa pipeline (steps 1+2).
 
     Args:
-        raw_data: A ``KnowledgeBaseEcoli`` instance.
-        core: Optional pre-configured core.  If None, one is allocated
-            and Step classes + types are registered automatically.
-        **kwargs: Pipeline configuration forwarded to step configs:
-            cpus (int), debug (bool), cache_dir (str),
-            variable_elongation_transcription (bool),
-            variable_elongation_translation (bool),
-            disable_ribosome_capacity_fitting (bool),
-            disable_rnapoly_capacity_fitting (bool).
+        raw_data: a ``KnowledgeBaseEcoli`` instance.
+        debug:    if True, Step 2 reduces tf_to_active_inactive_conditions
+                  to a single key.
+        core:     optional pre-built core; if omitted one is allocated and
+                  schema types + Step classes are registered on it.
 
     Returns:
-        A ``Composite`` instance with the pipeline already executed.
-        The final sim_data is at ``composite.state['state_9'].sim_data``.
+        The ``Composite`` instance with the pipeline already executed.
+        The final store state is at ``composite.state``.
     """
     if core is None:
         core = allocate_core(top=ALL_STEP_CLASSES)
-        register_parca_types(core)
+        register_parca_schema(core)
 
-    # Initial ParcaState: empty sim_data + empty cell_specs
-    state_0 = ParcaState(sim_data=SimulationDataEcoli(), cell_specs={})
-
-    # Extract config values with defaults
-    cpus = kwargs.get('cpus', 1)
-    debug = kwargs.get('debug', False)
-    cache_dir = kwargs.get('cache_dir', '')
-    var_elong_tx = kwargs.get('variable_elongation_transcription', True)
-    var_elong_tl = kwargs.get('variable_elongation_translation', False)
-    disable_ribo = kwargs.get('disable_ribosome_capacity_fitting', False)
-    disable_rnap = kwargs.get('disable_rnapoly_capacity_fitting', False)
-
-    # Port names for stage 2 extract outputs / pure step inputs
-    s02_in_fields = [
-        'monomer_ids', 'translation_efficiencies',
-        'translation_eff_adjustments', 'balanced_translation_groups',
-        'rna_ids', 'cistron_ids', 'basal_rna_expression',
-        'rna_expression_adjustments', 'cistron_id_to_rna_indexes',
-        'rna_deg_rates', 'cistron_deg_rates', 'rna_deg_rate_adjustments',
-        'protein_deg_rates', 'protein_deg_rate_adjustments',
-        'tf_to_active_inactive_conditions',
-    ]
-
-    # Port names for stage 2 pure step outputs / merge inputs
-    s02_out_fields = [
-        'translation_efficiencies', 'basal_rna_expression',
-        'rna_deg_rates', 'cistron_deg_rates', 'protein_deg_rates',
-        'tf_to_active_inactive_conditions',
-    ]
-
-    # Port names for stage 8 extract outputs / pure step inputs
-    s08_in_fields = [
-        'conditions', 'is_mRNA', 'is_tRNA', 'is_rRNA',
-        'includes_ribosomal_protein', 'includes_RNAP',
-    ]
-
-    # Port names for stage 8 pure step outputs / merge inputs
-    s08_out_fields = [
-        'rnaSynthProbFraction', 'rnapFractionActiveDict',
-        'rnaSynthProbRProtein', 'rnaSynthProbRnaPolymerase',
-        'rnaPolymeraseElongationRateDict', 'expectedDryMassIncreaseDict',
-        'ribosomeElongationRateDict', 'ribosomeFractionActiveDict',
-        'condition_outputs',
-    ]
+    # Pull port manifests from the Steps themselves so we can't drift.
+    from vparca.steps.step_01_initialize import OUTPUT_PORTS as _step1_out
+    from vparca.steps.step_02_input_adjustments import (
+        INPUT_PORTS  as _step2_in,
+        OUTPUT_PORTS as _step2_out,
+    )
 
     spec = {
+        # Fire all Steps once as part of Composite construction — we have
+        # no time-advancing processes here, only a DAG of Steps, so this
+        # is effectively "run the pipeline".
+        'run_steps_on_init': True,
         'state': {
-            # ---- Initial stores ----
-            'state_0': state_0,
-            'raw_data': raw_data,
-
-            # ---- Stage 1: Initialize ----
             'initialize': {
-                '_type': 'step',
+                '_type':   'step',
                 'address': 'local:InitializeStep',
-                'config': {},
-                'inputs': {
-                    'state': ['state_0'],
-                    'raw_data': ['raw_data'],
-                },
-                'outputs': {
-                    'state': ['state_1'],
-                },
-            },
-
-            # ---- Stage 2: Extract → Pure InputAdj → Merge ----
-            'extract_02': {
-                '_type': 'step',
-                'address': 'local:ExtractForStep2Step',
-                'config': {
-                    'debug': debug,
-                },
-                'inputs': {
-                    'state': ['state_1'],
-                },
-                'outputs': {f: ['s02_in', f] for f in s02_in_fields},
+                # raw_data is carried in config, not a store port, so
+                # bigraph-schema doesn't introspect the KB's internals.
+                'config':  {'raw_data': raw_data},
+                'inputs':  {},
+                'outputs': _wires(_step1_out.keys()),
             },
 
             'input_adjustments': {
-                '_type': 'step',
+                '_type':   'step',
                 'address': 'local:InputAdjustmentsStep',
-                'config': {
-                    'debug': debug,
-                },
-                'inputs': {f: ['s02_in', f] for f in s02_in_fields},
-                'outputs': {f: ['s02_out', f] for f in s02_out_fields},
-            },
-
-            'merge_02': {
-                '_type': 'step',
-                'address': 'local:MergeAfterStep2Step',
-                'config': {},
-                'inputs': {
-                    'state': ['state_1'],
-                    **{f: ['s02_out', f] for f in s02_out_fields},
-                },
-                'outputs': {
-                    'state': ['state_2'],
-                },
-            },
-
-            # ---- Stage 3: Basal Specs ----
-            'basal_specs': {
-                '_type': 'step',
-                'address': 'local:BasalSpecsStep',
-                'config': {
-                    'variable_elongation_transcription': var_elong_tx,
-                    'variable_elongation_translation': var_elong_tl,
-                    'disable_ribosome_capacity_fitting': disable_ribo,
-                    'disable_rnapoly_capacity_fitting': disable_rnap,
-                    'cache_dir': cache_dir,
-                },
-                'inputs': {
-                    'state': ['state_2'],
-                },
-                'outputs': {
-                    'state': ['state_3'],
-                    'conc_dict': ['stage_03', 'conc_dict'],
-                    'expression': ['stage_03', 'expression'],
-                    'synth_prob': ['stage_03', 'synth_prob'],
-                    'fit_cistron_expression': ['stage_03', 'fit_cistron_expression'],
-                    'doubling_time': ['stage_03', 'doubling_time'],
-                    'avg_cell_dry_mass_init': ['stage_03', 'avg_cell_dry_mass_init'],
-                    'fit_avg_soluble_target_mol_mass': ['stage_03', 'fit_avg_soluble_target_mol_mass'],
-                    'bulk_container': ['stage_03', 'bulk_container'],
-                },
-            },
-
-            # ---- Stage 4: TF Condition Specs ----
-            'tf_condition_specs': {
-                '_type': 'step',
-                'address': 'local:TfConditionSpecsStep',
-                'config': {
-                    'variable_elongation_transcription': var_elong_tx,
-                    'variable_elongation_translation': var_elong_tl,
-                    'disable_ribosome_capacity_fitting': disable_ribo,
-                    'disable_rnapoly_capacity_fitting': disable_rnap,
-                    'cpus': cpus,
-                },
-                'inputs': {
-                    'state': ['state_3'],
-                },
-                'outputs': {
-                    'state': ['state_4'],
-                    'condition_outputs': ['stage_04', 'condition_outputs'],
-                },
-            },
-
-            # ---- Stage 5: Fit Condition ----
-            'fit_condition': {
-                '_type': 'step',
-                'address': 'local:FitConditionStep',
-                'config': {
-                    'cpus': cpus,
-                },
-                'inputs': {
-                    'state': ['state_4'],
-                },
-                'outputs': {
-                    'state': ['state_5'],
-                    'condition_outputs': ['stage_05', 'condition_outputs'],
-                    'translation_supply_rate': ['stage_05', 'translation_supply_rate'],
-                },
-            },
-
-            # ---- Stage 6: Promoter Binding ----
-            'promoter_binding': {
-                '_type': 'step',
-                'address': 'local:PromoterBindingStep',
-                'config': {},
-                'inputs': {
-                    'state': ['state_5'],
-                },
-                'outputs': {
-                    'state': ['state_6'],
-                    'r_vector': ['stage_06', 'r_vector'],
-                    'r_columns': ['stage_06', 'r_columns'],
-                },
-            },
-
-            # ---- Stage 7: Adjust Promoters ----
-            'adjust_promoters': {
-                '_type': 'step',
-                'address': 'local:AdjustPromotersStep',
-                'config': {},
-                'inputs': {
-                    'state': ['state_6'],
-                },
-                'outputs': {
-                    'state': ['state_7'],
-                    'basal_prob': ['stage_07', 'basal_prob'],
-                    'delta_prob': ['stage_07', 'delta_prob'],
-                },
-            },
-
-            # ---- Stage 8: Extract → Pure SetConditions → Merge ----
-            'extract_08': {
-                '_type': 'step',
-                'address': 'local:ExtractForStep8Step',
-                'config': {},
-                'inputs': {
-                    'state': ['state_7'],
-                },
-                'outputs': {f: ['s08_in', f] for f in s08_in_fields},
-            },
-
-            'set_conditions': {
-                '_type': 'step',
-                'address': 'local:SetConditionsStep',
-                'config': {},
-                'inputs': {f: ['s08_in', f] for f in s08_in_fields},
-                'outputs': {f: ['s08_out', f] for f in s08_out_fields},
-            },
-
-            'merge_08': {
-                '_type': 'step',
-                'address': 'local:MergeAfterStep8Step',
-                'config': {},
-                'inputs': {
-                    'state': ['state_7'],
-                    **{f: ['s08_out', f] for f in s08_out_fields},
-                },
-                'outputs': {
-                    'state': ['state_8'],
-                },
-            },
-
-            # ---- Stage 9: Final Adjustments ----
-            'final_adjustments': {
-                '_type': 'step',
-                'address': 'local:FinalAdjustmentsStep',
-                'config': {},
-                'inputs': {
-                    'state': ['state_8'],
-                },
-                'outputs': {
-                    'state': ['state_9'],
-                },
+                'config':  {'debug': debug},
+                'inputs':  _wires(_step2_in.keys()),
+                'outputs': _wires(_step2_out.keys()),
             },
         },
     }
 
-    composite = Composite(spec, core=core)
-    return composite
+    return Composite(spec, core=core)
 
 
-def run_parca(raw_data, **kwargs):
-    """Run the full ParCa pipeline as process-bigraph Steps.
-
-    This is the main entry point.  Steps execute during Composite
-    construction via the DAG dependency chain.
-
-    Args:
-        raw_data: A ``KnowledgeBaseEcoli`` instance.
-        **kwargs: Forwarded to ``build_parca_composite()``.
-
-    Returns:
-        The fitted ``SimulationDataEcoli`` object.
-    """
-    composite = build_parca_composite(raw_data, **kwargs)
-    return composite.state['state_9'].sim_data
+def run_parca(raw_data, debug=False):
+    """Build the PoC composite, let the Step DAG execute, return store state."""
+    composite = build_parca_composite(raw_data, debug=debug)
+    return composite.state
