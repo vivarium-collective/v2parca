@@ -1,37 +1,45 @@
 """
 Step 1 — initialize (scatter).
 
-Runs ``SimulationDataEcoli.initialize(raw_data=...)`` internally and scatters
-the resulting leaves out through explicit output ports.  No ``sim_data`` or
-``cell_specs`` blob leaves this Step; from here on, every downstream Step
-reads and writes leaves directly through the nested bigraph store.
+Runs ``SimulationDataEcoli.initialize(raw_data=...)`` internally, then
+scatters the resulting subsystems and top-level data structures out as
+explicit output ports.  No ``sim_data`` blob leaves this Step; downstream
+Steps each wire ports to the subset of subsystems / leaves they actually
+need, making the dataflow fully explicit in the composite's wires.
 
-The scatter's output surface is exactly the union of leaves any downstream
-Step reads.  **This is the PoC version that covers Step 2 only**; as
-subsequent steps are converted to leaf-ports the scatter grows.  Store
-paths wired by the composite:
+raw_data enters through ``config`` (not a store port) so bigraph-schema
+doesn't introspect the KnowledgeBaseEcoli's deep internals at composite
+construction time.
 
-  raw_data                           (input)    raw_data
+Outputs (port → store path)
+---------------------------
 
-  OUTPUTS (port → store path)
-    monomer_ids                       process / translation / monomer_data / id
-    translation_efficiencies          process / translation / translation_efficiencies_by_monomer
-    translation_eff_adjustments       adjustments / translation_efficiencies_adjustments
-    balanced_translation_groups       adjustments / balanced_translation_efficiencies
-    rna_ids                           process / transcription / rna_data / id
-    cistron_ids                       process / transcription / cistron_data / id
-    basal_rna_expression              process / transcription / rna_expression / basal
-    rna_expression_adjustments        adjustments / rna_expression_adjustments
-    cistron_id_to_rna_indexes         process / transcription / cistron_id_to_rna_indexes_map
-    rna_deg_rates                     process / transcription / rna_data / deg_rate
-    cistron_deg_rates                 process / transcription / cistron_data / deg_rate
-    rna_deg_rate_adjustments          adjustments / rna_deg_rates_adjustments
-    protein_deg_rates                 process / translation / monomer_data / deg_rate
-    protein_deg_rate_adjustments      adjustments / protein_deg_rates_adjustments
-    tf_to_active_inactive_conditions  tf_to_active_inactive_conditions
+Subsystem objects — at their natural nested paths in the store tree:
 
-It is idiomatic for a ``Step`` with no inputs (besides ``raw_data``) to
-execute once at the head of the composite DAG.
+  transcription                    process / transcription
+  translation                      process / translation
+  metabolism                       process / metabolism
+  rna_decay                        process / rna_decay
+  complexation                     process / complexation
+  equilibrium                      process / equilibrium
+  two_component_system             process / two_component_system
+  transcription_regulation         process / transcription_regulation
+  replication                      process / replication
+  mass                             mass
+  constants                        constants
+  growth_rate_parameters           growth_rate_parameters
+  adjustments                      adjustments
+  molecule_groups                  molecule_groups
+  bulk_molecules                   internal_state / bulk_molecules
+
+Pure-data top-level dicts:
+
+  tf_to_active_inactive_conditions tf_to_active_inactive_conditions
+  conditions                       conditions
+  condition_to_doubling_time       condition_to_doubling_time
+  tf_to_fold_change                tf_to_fold_change
+  condition_active_tfs             condition_active_tfs
+  condition_inactive_tfs           condition_inactive_tfs
 """
 
 import time
@@ -41,34 +49,42 @@ from process_bigraph import Step
 from vparca.reconstruction.ecoli.simulation_data import SimulationDataEcoli
 
 
-# Every scatter output — keep in sync with what downstream steps read.
-OUTPUT_PORTS = {
-    'monomer_ids':                      'overwrite',
-    'translation_efficiencies':         'overwrite',
-    'translation_eff_adjustments':      'overwrite',
-    'balanced_translation_groups':      'overwrite',
-    'rna_ids':                          'overwrite',
-    'cistron_ids':                      'overwrite',
-    'basal_rna_expression':             'overwrite',
-    'rna_expression_adjustments':       'overwrite',
-    'cistron_id_to_rna_indexes':        'overwrite',
-    'rna_deg_rates':                    'overwrite',
-    'cistron_deg_rates':                'overwrite',
-    'rna_deg_rate_adjustments':         'overwrite',
-    'protein_deg_rates':                'overwrite',
-    'protein_deg_rate_adjustments':     'overwrite',
-    'tf_to_active_inactive_conditions': 'overwrite',
+# Subsystem object outputs — each typed by its corresponding schema entry.
+_SUBSYSTEM_PORTS = {
+    'transcription':            'sim_data.transcription',
+    'translation':              'sim_data.translation',
+    'metabolism':               'sim_data.metabolism',
+    'rna_decay':                'sim_data.rna_decay',
+    'complexation':             'sim_data.complexation',
+    'equilibrium':              'sim_data.equilibrium',
+    'two_component_system':     'sim_data.two_component_system',
+    'transcription_regulation': 'sim_data.transcription_regulation',
+    'replication':              'sim_data.replication',
+    'mass':                     'sim_data.mass',
+    'constants':                'sim_data.constants',
+    'growth_rate_parameters':   'sim_data.growth_rate_parameters',
+    # Not every sim_data subsystem has a dedicated schema type registered;
+    # use overwrite for the remainder.
+    'adjustments':              'overwrite',
+    'molecule_groups':           'overwrite',
+    'bulk_molecules':            'overwrite',
 }
+
+# Pure-data top-level dict outputs.
+_DATA_LEAF_PORTS = {
+    'tf_to_active_inactive_conditions': 'overwrite',
+    'conditions':                       'overwrite',
+    'condition_to_doubling_time':       'overwrite',
+    'tf_to_fold_change':                'overwrite',
+    'condition_active_tfs':             'overwrite',
+    'condition_inactive_tfs':           'overwrite',
+}
+
+OUTPUT_PORTS = {**_SUBSYSTEM_PORTS, **_DATA_LEAF_PORTS}
 
 
 class InitializeStep(Step):
-    """Run ``sim_data.initialize(raw_data=...)`` and scatter its leaves.
-
-    ``raw_data`` (a ``KnowledgeBaseEcoli`` instance) is delivered via
-    ``config`` rather than through a store port, so bigraph-schema doesn't
-    try to type-infer the nested KB structure at composite construction
-    time.  The Step has **no inputs** — it's the head of the DAG.
-    """
+    """Run ``sim_data.initialize(raw_data=...)`` and scatter its subsystems."""
 
     config_schema = {
         'raw_data':                   'overwrite',
@@ -88,8 +104,6 @@ class InitializeStep(Step):
         t0 = time.time()
         raw_data = self.config['raw_data']
 
-        # Build and initialize sim_data.  This is the one place sim_data
-        # exists; from here, we scatter it into store leaves.
         sim_data = SimulationDataEcoli()
         sim_data.initialize(
             raw_data=raw_data,
@@ -97,53 +111,34 @@ class InitializeStep(Step):
                 'basal_expression_condition', 'M9 Glucose minus AAs'),
         )
 
-        transcription = sim_data.process.transcription
-        translation   = sim_data.process.translation
-        adjustments   = sim_data.adjustments
-
-        # Precompute the cistron→rna-indexes mapping — it's derived from
-        # transcription's internal structure and feeding it through the
-        # store as a plain dict means step 2 doesn't need the live
-        # Transcription object just for this lookup.
-        cistron_ids = transcription.cistron_data['id']
-        cistron_id_to_rna_indexes_map = {
-            cid: transcription.cistron_id_to_rna_indexes(cid)
-            for cid in cistron_ids
-        }
-
+        # Scatter subsystems as live object references (no copies) so
+        # downstream steps can mutate them in place and the mutations
+        # persist in the store.
         out = {
-            # ---- translation ----
-            'monomer_ids': translation.monomer_data['id'],
-            'translation_efficiencies':
-                translation.translation_efficiencies_by_monomer.copy(),
-            'protein_deg_rates':
-                translation.monomer_data.struct_array['deg_rate'].copy(),
-
-            # ---- transcription ----
-            'rna_ids':                 transcription.rna_data['id'],
-            'cistron_ids':             cistron_ids,
-            'basal_rna_expression':    transcription.rna_expression['basal'].copy(),
-            'rna_deg_rates':
-                transcription.rna_data.struct_array['deg_rate'].copy(),
-            'cistron_deg_rates':
-                transcription.cistron_data.struct_array['deg_rate'].copy(),
-            'cistron_id_to_rna_indexes': cistron_id_to_rna_indexes_map,
-
-            # ---- adjustments (copied to decouple from live sim_data) ----
-            'translation_eff_adjustments':
-                dict(adjustments.translation_efficiencies_adjustments),
-            'balanced_translation_groups':
-                list(adjustments.balanced_translation_efficiencies),
-            'rna_expression_adjustments':
-                dict(adjustments.rna_expression_adjustments),
-            'rna_deg_rate_adjustments':
-                dict(adjustments.rna_deg_rates_adjustments),
-            'protein_deg_rate_adjustments':
-                dict(adjustments.protein_deg_rates_adjustments),
-
-            # ---- top-level ----
+            # subsystems
+            'transcription':            sim_data.process.transcription,
+            'translation':              sim_data.process.translation,
+            'metabolism':               sim_data.process.metabolism,
+            'rna_decay':                sim_data.process.rna_decay,
+            'complexation':             sim_data.process.complexation,
+            'equilibrium':              sim_data.process.equilibrium,
+            'two_component_system':     sim_data.process.two_component_system,
+            'transcription_regulation': sim_data.process.transcription_regulation,
+            'replication':              sim_data.process.replication,
+            'mass':                     sim_data.mass,
+            'constants':                sim_data.constants,
+            'growth_rate_parameters':   sim_data.growth_rate_parameters,
+            'adjustments':              sim_data.adjustments,
+            'molecule_groups':          sim_data.molecule_groups,
+            'bulk_molecules':           sim_data.internal_state.bulk_molecules,
+            # pure-data top-level dicts (copied — callers may mutate)
             'tf_to_active_inactive_conditions':
                 dict(sim_data.tf_to_active_inactive_conditions),
+            'conditions':                 dict(sim_data.conditions),
+            'condition_to_doubling_time': dict(sim_data.condition_to_doubling_time),
+            'tf_to_fold_change':          dict(sim_data.tf_to_fold_change),
+            'condition_active_tfs':       dict(sim_data.condition_active_tfs),
+            'condition_inactive_tfs':     dict(sim_data.condition_inactive_tfs),
         }
 
         print(f"  Step 1 (initialize + scatter) completed in {time.time() - t0:.1f}s")

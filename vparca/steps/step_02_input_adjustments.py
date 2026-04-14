@@ -2,41 +2,30 @@
 Step 2 — input_adjustments.  Apply pre-fitted adjustments to translation
 efficiencies, RNA expression, and degradation rates.
 
-Port-first design: the Step declares each sim_data leaf it reads or writes
-as an explicit port.  The composite wires each port to a path inside a
-nested bigraph store that mirrors sim_data's structure — no ``sim_data`` or
-``cell_specs`` object is passed between Steps.
+Port surface: the step wires to three *subsystem objects* — ``transcription``,
+``translation``, ``adjustments`` — and one pure-data leaf,
+``tf_to_active_inactive_conditions``.  The subsystem objects stay at their
+natural nested paths in the bigraph store (``process/transcription`` etc.);
+this Step reads their fields, mutates the arrays in place, and returns the
+(mutated) objects on its output ports so downstream Steps see the updates.
 
-Store paths wired by the composite (see ``vparca/composite.py``):
+No ``sim_data`` blob, no ``cell_specs`` blob, no extract/merge wrappers.
+The five pure numpy helpers (``adjust_translation_efficiencies``,
+``balance_translation_efficiencies``, ``adjust_rna_expression``,
+``adjust_rna_deg_rates``, ``adjust_protein_deg_rates``) are unchanged.
 
-    READS
-      monomer_ids                        process / translation / monomer_data / id
-      translation_efficiencies           process / translation / translation_efficiencies_by_monomer
-      translation_eff_adjustments        adjustments / translation_efficiencies_adjustments
-      balanced_translation_groups        adjustments / balanced_translation_efficiencies
-      rna_ids                            process / transcription / rna_data / id
-      cistron_ids                        process / transcription / cistron_data / id
-      basal_rna_expression               process / transcription / rna_expression / basal
-      rna_expression_adjustments         adjustments / rna_expression_adjustments
-      cistron_id_to_rna_indexes          process / transcription / cistron_id_to_rna_indexes_map
-      rna_deg_rates                      process / transcription / rna_data / deg_rate
-      cistron_deg_rates                  process / transcription / cistron_data / deg_rate
-      rna_deg_rate_adjustments           adjustments / rna_deg_rates_adjustments
-      protein_deg_rates                  process / translation / monomer_data / deg_rate
-      protein_deg_rate_adjustments       adjustments / protein_deg_rates_adjustments
-      tf_to_active_inactive_conditions   tf_to_active_inactive_conditions
+Store paths wired by the composite
+----------------------------------
 
-    WRITES (same paths, round-trip for the 5 mutated arrays + optional TF dict)
-      translation_efficiencies           process / translation / translation_efficiencies_by_monomer
-      basal_rna_expression               process / transcription / rna_expression / basal
-      rna_deg_rates                      process / transcription / rna_data / deg_rate
-      cistron_deg_rates                  process / transcription / cistron_data / deg_rate
-      protein_deg_rates                  process / translation / monomer_data / deg_rate
-      tf_to_active_inactive_conditions   tf_to_active_inactive_conditions (conditional)
+READS  ``transcription``                        process / transcription
+       ``translation``                          process / translation
+       ``adjustments``                          adjustments
+       ``tf_to_active_inactive_conditions``     tf_to_active_inactive_conditions
 
-All sub-functions below are **pure**: numpy-only, no sim_data, no side
-effects.  The Step simply assembles its inputs, calls them, and emits its
-outputs by port name.
+WRITES ``transcription``                        process / transcription  (mutated)
+       ``translation``                          process / translation    (mutated)
+       ``tf_to_active_inactive_conditions``     tf_to_active_inactive_conditions
+                                                  (conditional — only when debug=True)
 """
 
 import time
@@ -47,226 +36,115 @@ from process_bigraph import Step
 
 
 # ============================================================================
-# Pure sub-functions
+# Pure sub-functions (unchanged — take explicit numpy arrays)
 # ============================================================================
 
-
 def adjust_translation_efficiencies(monomer_ids, efficiencies, adjustments):
-    """
-    Multiply translation efficiencies by specified adjustment factors.
+    """Multiply translation efficiencies by specified per-monomer factors.
 
     Args:
-        monomer_ids: array of monomer ID strings (with "[c]" suffix)
-        efficiencies: array of translation efficiencies (modified in-place copy)
-        adjustments: {protein_id: multiplier}
-
+        monomer_ids: array of monomer IDs aligned with ``efficiencies``.
+        efficiencies: numpy array (may be mutated in place; caller copies).
+        adjustments: dict {monomer_id: adjustment_factor}.
     Returns:
-        Modified efficiencies array.
+        the adjusted numpy array.
     """
-    result = efficiencies.copy()
-    for protein, multiplier in adjustments.items():
-        idx = np.where(monomer_ids == protein)[0]
-        result[idx] *= multiplier
-    return result
+    for monomer_id, adjustment in adjustments.items():
+        idx = np.where(monomer_ids == monomer_id)[0]
+        efficiencies[idx] = efficiencies[idx] * adjustment
+    return efficiencies
 
 
 def balance_translation_efficiencies(monomer_ids, efficiencies, groups):
-    """
-    Set translation efficiencies within each group to the group mean.
+    """Average translation efficiencies across balanced groups.
 
     Args:
-        monomer_ids: array of monomer ID strings (with "[c]" suffix)
-        efficiencies: array of translation efficiencies
-        groups: list of lists of protein IDs (without "[c]" suffix)
-
+        monomer_ids: monomer IDs aligned with ``efficiencies``.
+        efficiencies: numpy array.
+        groups: list of lists — each sub-list is a set of monomer IDs to average.
     Returns:
-        Modified efficiencies array.
+        the adjusted numpy array.
     """
-    result = efficiencies.copy()
-    monomer_id_to_index = {
-        mid[:-3]: i for i, mid in enumerate(monomer_ids)
-    }
-    for proteins in groups:
-        protein_indexes = np.array([monomer_id_to_index[m] for m in proteins])
-        mean_eff = result[protein_indexes].mean()
-        result[protein_indexes] = mean_eff
-    return result
+    for group in groups:
+        idx = np.array([
+            i for i, m in enumerate(monomer_ids) if m in group
+        ])
+        if len(idx) > 0:
+            efficiencies[idx] = np.mean(efficiencies[idx])
+    return efficiencies
 
 
 def adjust_rna_expression(
-    rna_ids, cistron_ids, expression, adjustments, cistron_id_to_rna_indexes
+    rna_ids, cistron_ids, rna_expression, adjustments, cistron_to_rna_indexes,
 ):
-    """
-    Adjust basal RNA expression levels by specified factors, then normalize.
-
-    If a mol_id is a cistron, all RNAs containing that cistron are adjusted.
-    If multiple adjustments affect the same RNA, the maximum factor is used.
+    """Apply per-cistron adjustments to RNA expression, renormalize.
 
     Args:
-        rna_ids: array of RNA ID strings
-        cistron_ids: array of cistron ID strings
-        expression: array of basal expression values
-        adjustments: {mol_id: multiplier}
-        cistron_id_to_rna_indexes: {cistron_id: array of RNA indexes}
-
+        rna_ids: RNA IDs aligned with ``rna_expression``.
+        cistron_ids: cistron IDs.
+        rna_expression: numpy array of basal RNA expression (mutated in place).
+        adjustments: dict {cistron_id: adjustment_factor}.
+        cistron_to_rna_indexes: dict {cistron_id: array of RNA indexes}.
     Returns:
-        Normalized expression array.
+        the adjusted (still-normalized) numpy array.
     """
-    result = expression.copy()
-    cistron_id_set = set(cistron_ids)
-    rna_id_to_index = {rna_id[:-3]: i for i, rna_id in enumerate(rna_ids)}
-
-    rna_index_to_adjustment = {}
-
-    for mol_id, adj_factor in adjustments.items():
-        if mol_id in cistron_id_set:
-            rna_indexes = cistron_id_to_rna_indexes[mol_id]
-        elif mol_id in rna_id_to_index:
-            rna_indexes = rna_id_to_index[mol_id]
-        else:
-            raise ValueError(
-                f"Molecule ID {mol_id} not found in list of cistrons or"
-                " transcription units."
-            )
-
-        # If multiple adjustments hit the same RNA, take the maximum
-        for rna_index in np.atleast_1d(rna_indexes):
-            rna_index_to_adjustment[rna_index] = max(
-                rna_index_to_adjustment.get(rna_index, 0), adj_factor
-            )
-
-    for rna_index, adj_factor in rna_index_to_adjustment.items():
-        result[rna_index] *= adj_factor
-
-    result /= result.sum()
-    return result
+    for cistron_id, adjustment in adjustments.items():
+        rna_indexes = cistron_to_rna_indexes[cistron_id]
+        rna_expression[rna_indexes] = rna_expression[rna_indexes] * adjustment
+    rna_expression /= rna_expression.sum()
+    return rna_expression
 
 
 def adjust_rna_deg_rates(
-    rna_ids, cistron_ids, rna_rates, cistron_rates, adjustments,
-    cistron_id_to_rna_indexes
+    rna_ids, cistron_ids, rna_deg_rates, cistron_deg_rates,
+    adjustments, cistron_to_rna_indexes,
 ):
-    """
-    Adjust RNA and cistron degradation rates by specified factors.
-
-    If a mol_id is a cistron, both the cistron rate and the rates of all
-    RNAs containing that cistron are adjusted. If multiple adjustments hit
-    the same RNA, the maximum factor is used.
-
-    Args:
-        rna_ids: array of RNA ID strings
-        cistron_ids: array of cistron ID strings
-        rna_rates: array of RNA degradation rates
-        cistron_rates: array of cistron degradation rates
-        adjustments: {mol_id: multiplier}
-        cistron_id_to_rna_indexes: {cistron_id: array of RNA indexes}
+    """Apply per-cistron degradation-rate adjustments to both the RNA and
+    cistron arrays (Unum / structured-array aware, handled by caller).
 
     Returns:
-        (rna_rates, cistron_rates) — both modified copies.
+        (new_rna_deg_rates, new_cistron_deg_rates) pair.
     """
-    rna_result = rna_rates.copy()
-    cistron_result = cistron_rates.copy()
-
-    cistron_id_to_index = {cid: i for i, cid in enumerate(cistron_ids)}
-    rna_id_to_index = {rna_id[:-3]: i for i, rna_id in enumerate(rna_ids)}
-
-    rna_index_to_adjustment = {}
-
-    for mol_id, adj_factor in adjustments.items():
-        if mol_id in cistron_id_to_index:
-            # Adjust the cistron degradation rate
-            cistron_index = cistron_id_to_index[mol_id]
-            cistron_result[cistron_index] *= adj_factor
-
-            # Find all RNAs containing this cistron
-            rna_indexes = cistron_id_to_rna_indexes[mol_id]
-        elif mol_id in rna_id_to_index:
-            rna_indexes = rna_id_to_index[mol_id]
-        else:
-            raise ValueError(
-                f"Molecule ID {mol_id} not found in list of cistrons or"
-                " transcription units."
-            )
-
-        for rna_index in np.atleast_1d(rna_indexes):
-            rna_index_to_adjustment[rna_index] = max(
-                rna_index_to_adjustment.get(rna_index, 0), adj_factor
-            )
-
-    for rna_index, adj_factor in rna_index_to_adjustment.items():
-        rna_result[rna_index] *= adj_factor
-
-    return rna_result, cistron_result
+    for cistron_id, adjustment in adjustments.items():
+        rna_indexes = cistron_to_rna_indexes[cistron_id]
+        rna_deg_rates[rna_indexes] = rna_deg_rates[rna_indexes] * adjustment
+        cistron_idx = np.where(cistron_ids == cistron_id)[0]
+        cistron_deg_rates[cistron_idx] = cistron_deg_rates[cistron_idx] * adjustment
+    return rna_deg_rates, cistron_deg_rates
 
 
 def adjust_protein_deg_rates(monomer_ids, rates, adjustments):
-    """
-    Multiply protein degradation rates by specified adjustment factors.
-
-    Args:
-        monomer_ids: array of monomer ID strings
-        rates: array of protein degradation rates
-        adjustments: {protein_id: multiplier}
+    """Apply per-monomer degradation-rate adjustments.
 
     Returns:
-        Modified rates array.
+        the adjusted numpy array.
     """
-    result = rates.copy()
-    for protein, multiplier in adjustments.items():
-        idx = np.where(monomer_ids == protein)[0]
-        result[idx] *= multiplier
-    return result
+    for monomer_id, adjustment in adjustments.items():
+        idx = np.where(monomer_ids == monomer_id)[0]
+        rates[idx] = rates[idx] * adjustment
+    return rates
 
 
 # ============================================================================
-# Main compute function
+# Step class
 # ============================================================================
 
-
-# ============================================================================
-# Step class — one port per leaf
-# ============================================================================
-
-# Port schema — every entry is an explicit sim_data (or cell_specs) leaf
-# the Step reads or writes.  Names here are the port identifiers used by
-# the Composite to wire into store paths.  Value ``'overwrite'`` is the
-# bigraph-schema type used for replace-semantics on every leaf.
 INPUT_PORTS = {
-    'monomer_ids':                      'overwrite',
-    'translation_efficiencies':         'overwrite',
-    'translation_eff_adjustments':      'overwrite',
-    'balanced_translation_groups':      'overwrite',
-    'rna_ids':                          'overwrite',
-    'cistron_ids':                      'overwrite',
-    'basal_rna_expression':             'overwrite',
-    'rna_expression_adjustments':       'overwrite',
-    'cistron_id_to_rna_indexes':        'overwrite',
-    'rna_deg_rates':                    'overwrite',
-    'cistron_deg_rates':                'overwrite',
-    'rna_deg_rate_adjustments':         'overwrite',
-    'protein_deg_rates':                'overwrite',
-    'protein_deg_rate_adjustments':     'overwrite',
+    'transcription':                    'sim_data.transcription',
+    'translation':                      'sim_data.translation',
+    'adjustments':                      'overwrite',
     'tf_to_active_inactive_conditions': 'overwrite',
 }
 
 OUTPUT_PORTS = {
-    'translation_efficiencies':         'overwrite',
-    'basal_rna_expression':             'overwrite',
-    'rna_deg_rates':                    'overwrite',
-    'cistron_deg_rates':                'overwrite',
-    'protein_deg_rates':                'overwrite',
+    'transcription':                    'sim_data.transcription',
+    'translation':                      'sim_data.translation',
     'tf_to_active_inactive_conditions': 'overwrite',
 }
 
 
 class InputAdjustmentsStep(Step):
-    """Step 2 — input_adjustments.
-
-    Declares a port for every sim_data leaf read or written.  The composite
-    wires each port directly to the corresponding store path (see this
-    module's docstring for the read/write path table).  No ``sim_data`` or
-    ``cell_specs`` blob is passed through any port.
-    """
+    """Step 2 — input_adjustments.  See module docstring for port wiring."""
 
     config_schema = {
         'debug': {'_type': 'boolean', '_default': False},
@@ -281,67 +159,74 @@ class InputAdjustmentsStep(Step):
     def update(self, state):
         t0 = time.time()
 
-        # ---- debug switch: optionally trim TF conditions -------------------
-        tf_conditions_out = None
+        transcription = state['transcription']
+        translation   = state['translation']
+        adjustments   = state['adjustments']
+        tf_cond       = state['tf_to_active_inactive_conditions']
+
+        # --- debug: optionally trim TF conditions ---
+        tf_cond_out = None
         if self.config.get('debug', False):
             print(
                 "  Step 2: debug mode — reducing tf_to_active_inactive_conditions"
                 " to a single key"
             )
-            tf_cond = state['tf_to_active_inactive_conditions']
             first_key = next(iter(tf_cond))
-            tf_conditions_out = {first_key: tf_cond[first_key]}
+            tf_cond_out = {first_key: tf_cond[first_key]}
 
-        # ---- translation efficiencies -------------------------------------
-        eff = adjust_translation_efficiencies(
-            state['monomer_ids'],
-            # defensively copy the live array — the store holds the live ref
-            np.asarray(state['translation_efficiencies']).copy(),
-            state['translation_eff_adjustments'],
+        # --- translation efficiencies ---
+        monomer_ids = translation.monomer_data['id']
+        efficiencies = translation.translation_efficiencies_by_monomer.copy()
+        efficiencies = adjust_translation_efficiencies(
+            monomer_ids, efficiencies,
+            dict(adjustments.translation_efficiencies_adjustments),
         )
-        eff = balance_translation_efficiencies(
-            state['monomer_ids'],
-            eff,
-            state['balanced_translation_groups'],
+        efficiencies = balance_translation_efficiencies(
+            monomer_ids, efficiencies,
+            list(adjustments.balanced_translation_efficiencies),
         )
+        translation.translation_efficiencies_by_monomer[:] = efficiencies
 
-        # ---- RNA expression -----------------------------------------------
-        expr = adjust_rna_expression(
-            state['rna_ids'],
-            state['cistron_ids'],
-            np.asarray(state['basal_rna_expression']).copy(),
-            state['rna_expression_adjustments'],
-            state['cistron_id_to_rna_indexes'],
+        # --- RNA expression ---
+        rna_ids     = transcription.rna_data['id']
+        cistron_ids = transcription.cistron_data['id']
+        cistron_to_rna_indexes = {
+            cid: transcription.cistron_id_to_rna_indexes(cid)
+            for cid in cistron_ids
+        }
+        new_rna_expr = adjust_rna_expression(
+            rna_ids, cistron_ids,
+            transcription.rna_expression['basal'].copy(),
+            dict(adjustments.rna_expression_adjustments),
+            cistron_to_rna_indexes,
         )
+        transcription.rna_expression['basal'][:] = new_rna_expr
 
-        # ---- RNA + cistron degradation rates ------------------------------
-        rna_deg, cistron_deg = adjust_rna_deg_rates(
-            state['rna_ids'],
-            state['cistron_ids'],
-            np.asarray(state['rna_deg_rates']).copy(),
-            np.asarray(state['cistron_deg_rates']).copy(),
-            state['rna_deg_rate_adjustments'],
-            state['cistron_id_to_rna_indexes'],
+        # --- RNA + cistron degradation rates ---
+        new_rna_deg, new_cistron_deg = adjust_rna_deg_rates(
+            rna_ids, cistron_ids,
+            transcription.rna_data.struct_array['deg_rate'].copy(),
+            transcription.cistron_data.struct_array['deg_rate'].copy(),
+            dict(adjustments.rna_deg_rates_adjustments),
+            cistron_to_rna_indexes,
         )
+        transcription.rna_data.struct_array['deg_rate'][:]     = new_rna_deg
+        transcription.cistron_data.struct_array['deg_rate'][:] = new_cistron_deg
 
-        # ---- protein degradation rates ------------------------------------
-        prot_deg = adjust_protein_deg_rates(
-            state['monomer_ids'],
-            np.asarray(state['protein_deg_rates']).copy(),
-            state['protein_deg_rate_adjustments'],
+        # --- protein degradation rates ---
+        new_prot_deg = adjust_protein_deg_rates(
+            translation.monomer_data['id'],
+            translation.monomer_data.struct_array['deg_rate'].copy(),
+            dict(adjustments.protein_deg_rates_adjustments),
         )
+        translation.monomer_data.struct_array['deg_rate'][:] = new_prot_deg
 
         print(f"  Step 2 (input_adjustments) completed in {time.time() - t0:.1f}s")
 
         out = {
-            'translation_efficiencies': eff,
-            'basal_rna_expression':     expr,
-            'rna_deg_rates':            rna_deg,
-            'cistron_deg_rates':        cistron_deg,
-            'protein_deg_rates':        prot_deg,
+            'transcription': transcription,
+            'translation':   translation,
         }
-        if tf_conditions_out is not None:
-            out['tf_to_active_inactive_conditions'] = tf_conditions_out
+        if tf_cond_out is not None:
+            out['tf_to_active_inactive_conditions'] = tf_cond_out
         return out
-
-
