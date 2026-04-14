@@ -71,6 +71,13 @@ _SUBSYSTEM_PORTS = {
     'relation':                 'overwrite',
     'getter':                   'overwrite',
     'bulk_molecules':           'overwrite',
+    'external_state':           'overwrite',
+    # Escape-hatch port — the live SimulationDataEcoli instance.  Useful
+    # for the handful of sub-functions that call methods defined on
+    # sim_data itself (e.g. sim_data.calculate_ppgpp_expression) rather
+    # than on one of its subsystems.  Mutations to the subsystems carried
+    # by other ports propagate through this reference automatically.
+    'sim_data_root':            'overwrite',
 }
 
 # Pure-data top-level dict outputs.
@@ -92,6 +99,9 @@ _DATA_LEAF_PORTS = {
     'expected_dry_mass_increase_dict':  'overwrite',
     # Seeded empty; step 6 populates, step 7 consumes.
     'pPromoterBound':                   'overwrite',
+    # sim_data.condition is a mutable runtime attr (default "basal")
+    # used by create_bulk_container to pick the right nutrient media.
+    'condition':                        'overwrite',
 }
 
 OUTPUT_PORTS = {
@@ -152,6 +162,8 @@ class InitializeStep(Step):
             'relation':                 sim_data.relation,
             'getter':                   sim_data.getter,
             'bulk_molecules':           sim_data.internal_state.bulk_molecules,
+            'external_state':           sim_data.external_state,
+            'sim_data_root':            sim_data,
             # pure-data top-level dicts (copied — callers may mutate)
             'tf_to_active_inactive_conditions':
                 dict(sim_data.tf_to_active_inactive_conditions),
@@ -165,6 +177,7 @@ class InitializeStep(Step):
             'translation_supply_rate':    dict(sim_data.translation_supply_rate),
             'expected_dry_mass_increase_dict': {},
             'pPromoterBound':             {},
+            'condition':                  sim_data.condition,
             'tick_1': True,
         }
 

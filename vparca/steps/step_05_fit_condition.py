@@ -308,6 +308,7 @@ INPUT_PORTS = {
     'molecule_groups':          'overwrite',
     'getter':                   'overwrite',
     'bulk_molecules':           'overwrite',
+    'sim_data_root':            'overwrite',
     'conditions':                'overwrite',
     'cell_specs':                'overwrite',
 }

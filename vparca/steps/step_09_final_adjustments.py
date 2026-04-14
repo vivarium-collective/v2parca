@@ -46,6 +46,7 @@ INPUT_PORTS = {
     'relation':                 'overwrite',
     'getter':                   'overwrite',
     'bulk_molecules':           'overwrite',
+    'sim_data_root':            'overwrite',
     'conditions':               'overwrite',
     'condition_to_doubling_time': 'overwrite',
     'tf_to_active_inactive_conditions': 'overwrite',
@@ -56,6 +57,10 @@ INPUT_PORTS = {
     'cell_specs':               'overwrite',
     # calculate_attenuation reads sim_data.pPromoterBound (set by step 6)
     'pPromoterBound':           'overwrite',
+    # create_bulk_container uses external_state.exchange_data_from_media
+    # and mutates sim_data.condition temporarily.
+    'external_state':           'overwrite',
+    'condition':                'overwrite',
 }
 
 OUTPUT_PORTS = {

@@ -73,6 +73,7 @@ INPUT_PORTS = {
     'relation':                 'overwrite',
     'getter':                   'overwrite',
     'bulk_molecules':           'overwrite',
+    'sim_data_root':            'overwrite',
     # data leaves
     'condition_to_doubling_time': 'overwrite',
     'cell_specs':                 'overwrite',

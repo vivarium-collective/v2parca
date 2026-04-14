@@ -53,6 +53,7 @@ INPUT_PORTS = {
     'relation':                 'overwrite',
     'getter':                   'overwrite',
     'bulk_molecules':           'overwrite',
+    'sim_data_root':            'overwrite',
     'tf_to_active_inactive_conditions': 'overwrite',
     'conditions':                        'overwrite',
     'condition_to_doubling_time':        'overwrite',

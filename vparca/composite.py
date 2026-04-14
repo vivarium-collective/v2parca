@@ -69,6 +69,9 @@ STORE_PATH.update({
     'translation_supply_rate':          ['translation_supply_rate'],
     'expected_dry_mass_increase_dict':  ['expected_dry_mass_increase_dict'],
     'pPromoterBound':                   ['pPromoterBound'],
+    'external_state':                   ['external_state'],
+    'condition':                        ['condition'],
+    'sim_data_root':                    ['sim_data_root'],
 })
 
 

@@ -59,6 +59,7 @@ INPUT_PORTS = {
     'constants':                'sim_data.constants',
     'growth_rate_parameters':   'sim_data.growth_rate_parameters',
     'getter':                   'overwrite',
+    'sim_data_root':            'overwrite',
     'conditions':               'overwrite',
     'condition_to_doubling_time': 'overwrite',
     'cell_specs':               'overwrite',
