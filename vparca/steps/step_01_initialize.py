@@ -90,6 +90,8 @@ _DATA_LEAF_PORTS = {
     'translation_supply_rate':          'overwrite',
     # Seeded empty; step 8 populates.
     'expected_dry_mass_increase_dict':  'overwrite',
+    # Seeded empty; step 6 populates, step 7 consumes.
+    'pPromoterBound':                   'overwrite',
 }
 
 OUTPUT_PORTS = {
@@ -162,6 +164,7 @@ class InitializeStep(Step):
             'cell_specs':                 {},
             'translation_supply_rate':    dict(sim_data.translation_supply_rate),
             'expected_dry_mass_increase_dict': {},
+            'pPromoterBound':             {},
             'tick_1': True,
         }
 

@@ -70,6 +70,7 @@ def make_sim_data_facade(ports):
         'condition_active_tfs', 'condition_inactive_tfs',
         'translation_supply_rate',
         'expected_dry_mass_increase_dict',
+        'pPromoterBound',
     ]
     for name in data_leaf_attrs:
         if name in ports:

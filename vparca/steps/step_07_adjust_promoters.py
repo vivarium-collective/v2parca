@@ -49,6 +49,8 @@ INPUT_PORTS = {
     'condition_active_tfs':     'overwrite',
     'condition_inactive_tfs':   'overwrite',
     'cell_specs':               'overwrite',
+    # From step 6; fitLigandConcentrations reads sim_data.pPromoterBound.
+    'pPromoterBound':           'overwrite',
 }
 
 OUTPUT_PORTS = {

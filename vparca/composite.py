@@ -68,6 +68,7 @@ STORE_PATH.update({
     'cell_specs':                       ['cell_specs'],
     'translation_supply_rate':          ['translation_supply_rate'],
     'expected_dry_mass_increase_dict':  ['expected_dry_mass_increase_dict'],
+    'pPromoterBound':                   ['pPromoterBound'],
 })
 
 

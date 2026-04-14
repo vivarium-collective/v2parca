@@ -57,6 +57,9 @@ OUTPUT_PORTS = {
     'transcription':            'sim_data.transcription',
     'transcription_regulation': 'sim_data.transcription_regulation',
     'cell_specs':               'overwrite',
+    # fitPromoterBoundProbability sets sim_data.pPromoterBound as a
+    # dynamic top-level attr; propagate it so step 7 can read it.
+    'pPromoterBound':           'overwrite',
 }
 
 
@@ -87,5 +90,6 @@ class PromoterBindingStep(Step):
             'transcription':            sd.process.transcription,
             'transcription_regulation': sd.process.transcription_regulation,
             'cell_specs':               cell_specs,
-        
-            'tick_6': True,}
+            'pPromoterBound':           getattr(sd, 'pPromoterBound', {}),
+            'tick_6': True,
+        }
