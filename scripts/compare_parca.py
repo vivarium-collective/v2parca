@@ -1,48 +1,37 @@
 #!/usr/bin/env python
 """
-compare_parca.py — side-by-side report comparing the original
-``fitSimData_1`` (vivarium-ecoli) with vParCa's port-first
-``build_parca_composite``.
+compare_parca.py — per-step side-by-side report comparing vParCa (port-
+first composite) against the original ``fitSimData_1`` in vivarium-ecoli.
 
-The ParCa is a one-shot fitting operation, not a dynamic simulation, so
-the useful comparison axes are:
+Walks every available step checkpoint in both directories and emits a
+single self-contained HTML report with a sticky left navigation.  Each
+Step gets its own section with:
 
-  1.  **Runtimes** per pipeline step and overall
-  2.  **Fitted distributions** that the ParCa emits — RNA expression,
-      synthesis probability, RNA / cistron / protein degradation rates,
-      translation efficiencies, bulk counts
-  3.  **Per-condition initial conditions** in ``cell_specs`` — expression,
-      synthProb, doubling_time, avgCellDryMassInit, bulkContainer, …
-  4.  **Scalar constants** that the ParCa computes (e.g. ``darkATP``,
-      ``avg_cell_dry_mass_init``)
+  * runtime (vParCa vs vEcoli, ratio)
+  * Input / Output port manifest (documents the step's declared data flow)
+  * State comparison — scalars, distributions, and cell_specs entries
+    that the step produced, each with max |Δ|, max rel Δ, and KS p-value
+  * overlaid histograms for array-valued outputs
 
-Output is a single self-contained HTML report with base64-embedded
-matplotlib figures, modeled after v2ecoli's ``compare_report.py``.
+Inputs
+------
+  --vparca-outdir       DIR  contains checkpoint_step_N.pkl + runtimes.json
+                             (produced by scripts/parca_bigraph.py)
+  --original-intermediates DIR  contains sim_data_<step>.cPickle +
+                             cell_specs_<step>.cPickle (produced by
+                             vivarium-ecoli's runscripts/parca.py
+                             --save-intermediates)
+  -o                    PATH output HTML file
 
-Usage
------
-
-    # Compare two pre-computed outputs (typical flow):
-    python scripts/compare_parca.py \\
-        --vparca-state      out/sim_data/parca_state.pkl \\
-        --original-sim-data out/orig/sim_data.cPickle \\
-        --original-runtimes out/orig/runtimes.json \\
-        -o out/compare/report.html
-
-    # Run both engines from scratch and compare (slow — ~60+ min):
-    python scripts/compare_parca.py --run --mode fast -o out/compare/report.html
-
-The ``--original-sim-data`` / ``--original-runtimes`` inputs are produced
-by running ``vivarium-ecoli``'s ``runscripts/parca.py`` once; point the
-script at the resulting ``sim_data.cPickle`` and a JSON you write with
-``{"step_1": secs, "step_2": secs, …}`` if the original's per-step timing
-is available (otherwise omit and the report shows only total).
+Missing checkpoints on either side render as "not compared" with the
+reason listed; partial pipelines don't break the report.
 """
 
 from __future__ import annotations
 
 import argparse
 import base64
+import importlib
 import io
 import json
 import os
@@ -50,9 +39,8 @@ import pickle
 import sys
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
-# Make vparca/ imports work when run from anywhere.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import numpy as np
@@ -68,19 +56,140 @@ except Exception:
 
 
 # ---------------------------------------------------------------------------
-# Utilities
+# Per-step metadata — name, vParCa checkpoint filename, vEcoli filenames,
+# and the port module we pull INPUT_PORTS / OUTPUT_PORTS from.
 # ---------------------------------------------------------------------------
 
-def _b64fig(fig, dpi: int = 120) -> str:
-    buf = io.BytesIO()
-    fig.savefig(buf, format='png', dpi=dpi, bbox_inches='tight')
-    plt.close(fig)
-    buf.seek(0)
-    return base64.b64encode(buf.read()).decode('ascii')
+STEPS: List[Dict[str, str]] = [
+    dict(n=1, name='initialize',        long='Initialize sim_data + scatter',
+         vparca='checkpoint_step_1.pkl',  vecoli_stub='initialize',
+         module='vparca.steps.step_01_initialize'),
+    dict(n=2, name='input_adjustments', long='Pre-fitted adjustments to expression + deg rates',
+         vparca='checkpoint_step_2.pkl',  vecoli_stub='input_adjustments',
+         module='vparca.steps.step_02_input_adjustments'),
+    dict(n=3, name='basal_specs',       long='Build basal cell specifications',
+         vparca='checkpoint_step_3.pkl',  vecoli_stub='basal_specs',
+         module='vparca.steps.step_03_basal_specs'),
+    dict(n=4, name='tf_condition_specs',long='Per-TF + combined condition cell specs',
+         vparca='checkpoint_step_4.pkl',  vecoli_stub='tf_condition_specs',
+         module='vparca.steps.step_04_tf_condition_specs'),
+    dict(n=5, name='fit_condition',     long='Bulk distributions + translation supply rates',
+         vparca='checkpoint_step_5.pkl',  vecoli_stub='fit_condition',
+         module='vparca.steps.step_05_fit_condition'),
+    dict(n=6, name='promoter_binding',  long='TF-promoter binding probabilities (CVXPY)',
+         vparca='checkpoint_step_6.pkl',  vecoli_stub='promoter_binding',
+         module='vparca.steps.step_06_promoter_binding'),
+    dict(n=7, name='adjust_promoters',  long='Ligand concentrations + RNAP recruitment',
+         vparca='checkpoint_step_7.pkl',  vecoli_stub='adjust_promoters',
+         module='vparca.steps.step_07_adjust_promoters'),
+    dict(n=8, name='set_conditions',    long='Per-nutrient dicts + mass rescaling',
+         vparca='checkpoint_step_8.pkl',  vecoli_stub='set_conditions',
+         module='vparca.steps.step_08_set_conditions'),
+    dict(n=9, name='final_adjustments', long='ppGpp kinetics + amino-acid supply constants',
+         vparca='checkpoint_step_9.pkl',  vecoli_stub='final_adjustments',
+         module='vparca.steps.step_09_final_adjustments'),
+]
 
 
-def _as_array(x) -> np.ndarray:
-    """Coerce Unum / structured-array / list-like to a float numpy array."""
+# Fields to compare as scalars (sim_data attr paths).
+SCALARS: List[Tuple[str, Tuple[str, ...]]] = [
+    ('mass.avg_cell_dry_mass_init',       ('mass', 'avg_cell_dry_mass_init')),
+    ('mass.avg_cell_dry_mass',            ('mass', 'avg_cell_dry_mass')),
+    ('mass.avg_cell_water_mass_init',     ('mass', 'avg_cell_water_mass_init')),
+    ('mass.fitAvgSolubleTargetMolMass',   ('mass', 'fitAvgSolubleTargetMolMass')),
+    ('constants.darkATP',                 ('constants', 'darkATP')),
+]
+
+# Array-valued distributions.
+DISTRIBUTIONS: List[Tuple[str, Tuple[str, ...]]] = [
+    ('RNA expression — basal',    ('process', 'transcription', 'rna_expression', 'basal')),
+    ('RNA synthesis prob — basal',('process', 'transcription', 'rna_synth_prob', 'basal')),
+    ('RNA deg rates',              ('process', 'transcription', 'rna_data', 'deg_rate')),
+    ('Cistron deg rates',          ('process', 'transcription', 'cistron_data', 'deg_rate')),
+    ('Protein deg rates',          ('process', 'translation', 'monomer_data', 'deg_rate')),
+    ('Translation efficiencies',   ('process', 'translation', 'translation_efficiencies_by_monomer')),
+    ('Km endoRNase (transcribed)', ('process', 'transcription', 'rna_data', 'Km_endoRNase')),
+    ('Km endoRNase (mature)',      ('process', 'transcription', 'mature_rna_data', 'Km_endoRNase')),
+]
+
+CELL_SPECS_FIELDS = [
+    'expression', 'synthProb', 'fit_cistron_expression',
+    'doubling_time', 'avgCellDryMassInit', 'fitAvgSolubleTargetMolMass',
+    'bulkContainer',
+]
+
+
+# ---------------------------------------------------------------------------
+# vEcoli pickle compatibility
+# ---------------------------------------------------------------------------
+
+def _alias_vivarium_ecoli_modules() -> None:
+    """Register vendored ``vparca.*`` modules as their top-level vEcoli
+    names so vivarium-ecoli pickles unpickle inside the vParCa env."""
+    for modpath in (
+        'vparca.reconstruction.ecoli.simulation_data',
+        'vparca.reconstruction.ecoli.dataclasses',
+        'vparca.wholecell.utils.units',
+        'vparca.ecoli.library.schema',
+    ):
+        try:
+            importlib.import_module(modpath)
+        except Exception:
+            pass
+    for name, mod in list(sys.modules.items()):
+        for top in ('vparca.reconstruction', 'vparca.wholecell', 'vparca.ecoli'):
+            if name == top or name.startswith(top + '.'):
+                alias = name[len('vparca.'):]
+                sys.modules.setdefault(alias, mod)
+
+
+def _load_pickle(path: Optional[str]) -> Any:
+    if path is None or not os.path.exists(path):
+        return None
+    _alias_vivarium_ecoli_modules()
+    with open(path, 'rb') as f:
+        return pickle.load(f)
+
+
+# ---------------------------------------------------------------------------
+# Data-shape navigation (flat vParCa state vs nested SimulationDataEcoli)
+# ---------------------------------------------------------------------------
+
+def _get(obj, attr):
+    if obj is None:
+        return None
+    if isinstance(obj, dict):
+        return obj.get(attr)
+    val = getattr(obj, attr, None)
+    if val is not None:
+        return val
+    try:
+        return obj[attr]
+    except (KeyError, IndexError, TypeError):
+        return None
+
+
+def _reach(obj, path: Tuple[str, ...]):
+    if obj is None:
+        return None
+    if isinstance(obj, dict) and 'transcription' in obj and 'process' not in obj:
+        if path and path[0] == 'process' and len(path) > 1:
+            path = path[1:]
+        if path and path[0] == 'internal_state' and len(path) > 1:
+            if path[1] == 'bulk_molecules':
+                path = ('bulk_molecules',) + tuple(path[2:])
+    for p in path:
+        if obj is None:
+            return None
+        obj = _get(obj, p)
+    return obj
+
+
+# ---------------------------------------------------------------------------
+# Numerical helpers
+# ---------------------------------------------------------------------------
+
+def _as_array(x) -> Optional[np.ndarray]:
     if x is None:
         return None
     try:
@@ -93,12 +202,10 @@ def _as_array(x) -> np.ndarray:
     except Exception:
         return None
     if arr.dtype.kind not in ('i', 'f', 'u'):
-        # Try to pull out a 'count' or first numeric column from structured.
         if arr.dtype.names:
             for name in ('count', 'counts', 'deg_rate'):
                 if name in arr.dtype.names:
                     return np.asarray(arr[name], dtype=float)
-            # fall back: first numeric field
             for name in arr.dtype.names:
                 sub = arr[name]
                 if sub.dtype.kind in ('i', 'f', 'u'):
@@ -108,11 +215,9 @@ def _as_array(x) -> np.ndarray:
 
 
 def _safe_rel_diff(a: np.ndarray, b: np.ndarray) -> float:
-    """Max |a - b| / (|a| + |b| + eps) — symmetric, avoids div-by-zero."""
-    a = np.asarray(a, dtype=float)
-    b = np.asarray(b, dtype=float)
+    a = np.asarray(a, dtype=float); b = np.asarray(b, dtype=float)
     if a.shape != b.shape:
-        return np.nan
+        return float('nan')
     eps = 1e-30
     denom = np.maximum(np.abs(a) + np.abs(b) + eps, eps)
     return float(np.max(np.abs(a - b) / denom))
@@ -121,155 +226,34 @@ def _safe_rel_diff(a: np.ndarray, b: np.ndarray) -> float:
 def _safe_max_abs(a: np.ndarray, b: np.ndarray) -> float:
     a = np.asarray(a, dtype=float); b = np.asarray(b, dtype=float)
     if a.shape != b.shape:
-        return np.nan
+        return float('nan')
     return float(np.max(np.abs(a - b)))
 
 
-# ---------------------------------------------------------------------------
-# Data access — walk both sim_data shapes into a uniform (path, array) map
-# ---------------------------------------------------------------------------
-
-def _get(obj, attr):
-    """Attribute access that tolerates dicts, namespaces, structured
-    arrays (which use ``__getitem__`` for field access), and None."""
-    if obj is None:
-        return None
-    if isinstance(obj, dict):
-        return obj.get(attr)
-    val = getattr(obj, attr, None)
-    if val is not None:
-        return val
-    # Structured-array / unum-struct-array field access.
-    try:
-        return obj[attr]
-    except (KeyError, IndexError, TypeError):
-        return None
+def _b64fig(fig, dpi: int = 110) -> str:
+    buf = io.BytesIO()
+    fig.savefig(buf, format='png', dpi=dpi, bbox_inches='tight')
+    plt.close(fig)
+    buf.seek(0)
+    return base64.b64encode(buf.read()).decode('ascii')
 
 
-def _walk(obj, path=None):
-    """Yield (dot-path, attr-object) tuples for a nested sim_data-like thing."""
-    if path is None:
-        path = []
-    # Skip Python built-ins on containers
-    if isinstance(obj, dict):
-        for k, v in obj.items():
-            yield from _walk(v, path + [str(k)])
-    elif hasattr(obj, '__dict__'):
-        for k, v in obj.__dict__.items():
-            if k.startswith('_'):
-                continue
-            yield from _walk(v, path + [k])
-    else:
-        yield ('.'.join(path), obj)
-
-
-# Distributions to extract.  Each entry: (label, (accessor, …))
-# accessors are applied in sequence to reach the leaf.
-DISTRIBUTIONS: List[Tuple[str, Tuple[str, ...]]] = [
-    ('RNA expression — basal',             ('process', 'transcription', 'rna_expression', 'basal')),
-    ('RNA synthesis prob — basal',         ('process', 'transcription', 'rna_synth_prob', 'basal')),
-    ('RNA deg rates',                       ('process', 'transcription', 'rna_data', 'deg_rate')),
-    ('Cistron deg rates',                   ('process', 'transcription', 'cistron_data', 'deg_rate')),
-    ('Protein deg rates',                   ('process', 'translation', 'monomer_data', 'deg_rate')),
-    ('Translation efficiencies',            ('process', 'translation', 'translation_efficiencies_by_monomer')),
-    ('Km endoRNase (transcribed)',          ('process', 'transcription', 'rna_data', 'Km_endoRNase')),
-    ('Km endoRNase (mature)',               ('process', 'transcription', 'mature_rna_data', 'Km_endoRNase')),
-    ('cistron_data deg_rate (via struct)',  ('process', 'transcription', 'cistron_data')),
-]
-
-
-SCALARS: List[Tuple[str, Tuple[str, ...]]] = [
-    ('mass.avg_cell_dry_mass_init',       ('mass', 'avg_cell_dry_mass_init')),
-    ('mass.avg_cell_dry_mass',            ('mass', 'avg_cell_dry_mass')),
-    ('mass.avg_cell_water_mass_init',     ('mass', 'avg_cell_water_mass_init')),
-    ('mass.fitAvgSolubleTargetMolMass',   ('mass', 'fitAvgSolubleTargetMolMass')),
-    ('constants.darkATP',                 ('constants', 'darkATP')),
-]
-
-
-# cell_specs fields to compare per condition.
-CELL_SPECS_FIELDS = [
-    'expression', 'synthProb', 'fit_cistron_expression',
-    'doubling_time', 'avgCellDryMassInit', 'fitAvgSolubleTargetMolMass',
-    'bulkContainer',
-]
-
-
-def _reach(obj, path: Tuple[str, ...]):
-    """Apply path sequentially; tolerates dict or attr access.
-
-    vParCa's composite.state is a **flat** dict keyed by port name
-    (``'transcription'``, ``'mass'``, …) with subsystem objects at the
-    leaves.  vEcoli's sim_data is a ``SimulationDataEcoli`` instance with
-    subsystems at ``sim_data.process.transcription``.  To unify the two
-    we map ``('process', 'transcription', *rest)`` to ``[transcription, *rest]``
-    when the object looks flat (dict with subsystem keys at top level)."""
-    if obj is None:
-        return None
-    # Detect flat vParCa state: top-level dict with 'transcription' /
-    # 'mass' keys rather than a 'process' key.
-    if isinstance(obj, dict) and 'transcription' in obj and 'process' not in obj:
-        if path and path[0] == 'process' and len(path) > 1:
-            path = path[1:]
-        if path and path[0] == 'internal_state' and len(path) > 1:
-            # vEcoli: sim_data.internal_state.bulk_molecules
-            # vParCa: state['bulk_molecules']
-            if path[1] == 'bulk_molecules':
-                path = ('bulk_molecules',) + tuple(path[2:])
-    for p in path:
-        if obj is None:
-            return None
-        obj = _get(obj, p)
-    return obj
-
-
-def _sim_data_like_from_vparca_state(state: Dict[str, Any]) -> Any:
-    """Hand back the vParCa state as-is.  ``_reach`` handles the shape
-    difference against a vEcoli ``SimulationDataEcoli`` instance."""
-    return state
-
-
-# ---------------------------------------------------------------------------
-# Plot helpers
-# ---------------------------------------------------------------------------
-
-def _hist_overlay(arr_a, arr_b, label_a, label_b, title, log=False) -> str:
-    a = _as_array(arr_a); b = _as_array(arr_b)
-    if a is None and b is None:
-        fig, ax = plt.subplots(figsize=(6, 3))
-        ax.text(0.5, 0.5, 'data unavailable', ha='center', va='center')
-        ax.set_axis_off(); return _b64fig(fig)
-
-    fig, ax = plt.subplots(figsize=(6, 3))
-    if a is not None and a.size:
-        av = a[np.isfinite(a)]
-        if log and (av > 0).any():
-            av = np.log10(av[av > 0])
-        ax.hist(av, bins=60, alpha=0.55, label=label_a, color='#dc2626', density=True)
-    if b is not None and b.size:
-        bv = b[np.isfinite(b)]
-        if log and (bv > 0).any():
-            bv = np.log10(bv[bv > 0])
-        ax.hist(bv, bins=60, alpha=0.55, label=label_b, color='#2563eb', density=True)
+def _hist_overlay(a, b, title, log=False) -> str:
+    aa = _as_array(a); bb = _as_array(b)
+    fig, ax = plt.subplots(figsize=(6, 2.8))
+    if aa is not None and aa.size:
+        v = aa[np.isfinite(aa)]
+        if log and (v > 0).any():
+            v = np.log10(v[v > 0])
+        ax.hist(v, bins=60, alpha=0.55, label='vParCa', color='#2563eb', density=True)
+    if bb is not None and bb.size:
+        v = bb[np.isfinite(bb)]
+        if log and (v > 0).any():
+            v = np.log10(v[v > 0])
+        ax.hist(v, bins=60, alpha=0.55, label='vEcoli',  color='#dc2626', density=True)
     ax.set_title(title + (' (log10)' if log else ''))
     ax.legend(loc='best', fontsize=8)
     ax.grid(True, alpha=0.3)
-    return _b64fig(fig)
-
-
-def _runtime_bar(vparca_times: Dict[str, float],
-                 original_total: Optional[float]) -> str:
-    steps = [f'step_{n}' for n in range(1, 10)]
-    vparca_vals = [vparca_times.get(s, 0.0) for s in steps]
-    fig, ax = plt.subplots(figsize=(8, 3.5))
-    x = np.arange(len(steps))
-    ax.bar(x, vparca_vals, width=0.6, color='#2563eb', label='vParCa (per step)')
-    if original_total is not None:
-        ax.axhline(original_total, color='#dc2626', lw=1.5, ls='--',
-                   label=f'original total = {original_total:.0f}s')
-    ax.set_xticks(x); ax.set_xticklabels(steps, rotation=30)
-    ax.set_ylabel('seconds'); ax.set_title('Pipeline runtime')
-    ax.grid(True, axis='y', alpha=0.3); ax.legend(fontsize=8)
     return _b64fig(fig)
 
 
@@ -277,33 +261,8 @@ def _runtime_bar(vparca_times: Dict[str, float],
 # HTML rendering
 # ---------------------------------------------------------------------------
 
-_HTML_TEMPLATE = """<!doctype html>
-<html><head><meta charset='utf-8'>
-<title>vParCa vs ParCa — fitting comparison</title>
-<style>
-  body  {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-           max-width: 1100px; margin: 20px auto; padding: 0 24px; color: #111; }}
-  h1    {{ border-bottom: 3px solid #2563eb; padding-bottom: 6px; }}
-  h2    {{ margin-top: 36px; border-bottom: 1px solid #ddd; padding-bottom: 4px; }}
-  h3    {{ margin-top: 20px; color: #333; }}
-  table {{ border-collapse: collapse; width: 100%; font-size: 13px; }}
-  th, td {{ border: 1px solid #ccc; padding: 5px 8px; text-align: left; }}
-  th    {{ background: #f3f4f6; }}
-  tr.pass {{ background: #ecfdf5; }}
-  tr.warn {{ background: #fffbeb; }}
-  tr.fail {{ background: #fef2f2; }}
-  img   {{ max-width: 100%; border: 1px solid #eee; margin: 6px 0; }}
-  .grid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 10px 16px; }}
-  code  {{ background: #f3f4f6; padding: 1px 4px; border-radius: 3px; }}
-  .meta {{ color: #555; font-size: 13px; }}
-</style></head><body>
-<h1>vParCa vs ParCa — fitting comparison</h1>
-<p class='meta'>{meta}</p>
-{body}
-</body></html>"""
-
-
-def _row_class(rel_diff: float, tol_pass: float = 1e-6, tol_warn: float = 1e-3) -> str:
+def _row_class(rel_diff: Optional[float],
+               tol_pass: float = 1e-6, tol_warn: float = 1e-3) -> str:
     if rel_diff is None or not np.isfinite(rel_diff):
         return 'warn'
     if rel_diff < tol_pass:
@@ -314,9 +273,11 @@ def _row_class(rel_diff: float, tol_pass: float = 1e-6, tol_warn: float = 1e-3) 
 
 
 def _fmt(x):
-    if x is None: return ''
+    if x is None:
+        return ''
     if isinstance(x, float):
-        if not np.isfinite(x): return 'n/a'
+        if not np.isfinite(x):
+            return 'n/a'
         if abs(x) >= 1e4 or (abs(x) > 0 and abs(x) < 1e-3):
             return f'{x:.3e}'
         return f'{x:.4g}'
@@ -324,108 +285,127 @@ def _fmt(x):
 
 
 # ---------------------------------------------------------------------------
-# Report builder
+# Per-step section builders
 # ---------------------------------------------------------------------------
 
-def build_report(vparca, original, vparca_times, original_times,
-                 output_path: str, tol_pass: float = 1e-6,
-                 tol_warn: float = 1e-3) -> None:
-    """Write the HTML report.  vparca/original should be dict-like or
-    namespace-like containers that respond to ``_reach(path)`` uniformly."""
-    body_parts: List[str] = []
+def _port_table(module_name: str) -> str:
+    """Pull INPUT_PORTS / OUTPUT_PORTS from a step module and render
+    them side-by-side as the 'declared data flow' summary."""
+    try:
+        m = importlib.import_module(module_name)
+    except Exception as e:
+        return f'<p class="meta">(port manifest unavailable: {e})</p>'
+    ins  = getattr(m, 'INPUT_PORTS',  {}) or {}
+    outs = getattr(m, 'OUTPUT_PORTS', {}) or {}
+    in_ports  = [k for k in ins  if not k.startswith('tick_')]
+    out_ports = [k for k in outs if not k.startswith('tick_')]
+    cols = max(len(in_ports), len(out_ports), 1)
+    rows = []
+    rows.append('<table><tr><th style="width:50%">Inputs (reads)</th>'
+                '<th style="width:50%">Outputs (writes)</th></tr>')
+    for i in range(cols):
+        ip = in_ports[i]  if i < len(in_ports)  else ''
+        op = out_ports[i] if i < len(out_ports) else ''
+        it = ins.get(ip, '')
+        ot = outs.get(op, '')
+        rows.append(
+            f'<tr><td><code>{ip}</code> <span class="meta">{it}</span></td>'
+            f'<td><code>{op}</code> <span class="meta">{ot}</span></td></tr>'
+        )
+    rows.append('</table>')
+    return '\n'.join(rows)
 
-    # -- 1. Runtimes ------------------------------------------------------
-    body_parts.append('<h2>1. Runtimes</h2>')
-    orig_total = sum(original_times.values()) if original_times else None
-    body_parts.append(f"<img src='data:image/png;base64,{_runtime_bar(vparca_times, orig_total)}'/>")
-    body_parts.append('<table><tr><th>step</th><th>vParCa (s)</th>'
-                      '<th>original (s)</th><th>ratio</th></tr>')
-    for n in range(1, 10):
-        k = f'step_{n}'
-        vt = vparca_times.get(k); ot = original_times.get(k) if original_times else None
-        ratio = (vt / ot) if (vt and ot) else None
-        body_parts.append(
-            f'<tr><td>{k}</td><td>{_fmt(vt)}</td>'
-            f'<td>{_fmt(ot)}</td><td>{_fmt(ratio)}</td></tr>')
-    v_tot = sum(vparca_times.values()) if vparca_times else None
-    body_parts.append(
-        f'<tr><th>TOTAL</th><th>{_fmt(v_tot)}</th>'
-        f'<th>{_fmt(orig_total)}</th>'
-        f'<th>{_fmt((v_tot / orig_total) if (v_tot and orig_total) else None)}</th></tr>')
-    body_parts.append('</table>')
 
-    # -- 2. Scalar constants ---------------------------------------------
-    body_parts.append('<h2>2. Scalar constants</h2>')
-    body_parts.append('<table><tr><th>path</th><th>vParCa</th>'
-                      '<th>original</th><th>rel diff</th></tr>')
+def _section_runtime(vt: Optional[float], ot: Optional[float]) -> str:
+    ratio = (vt / ot) if (vt and ot and ot > 0) else None
+    return (
+        '<h3>Runtime</h3>'
+        '<table><tr><th>vParCa</th><th>vEcoli</th><th>ratio (vParCa/vEcoli)</th></tr>'
+        f'<tr><td>{_fmt(vt)} s</td><td>{_fmt(ot)} s</td><td>{_fmt(ratio)}</td></tr>'
+        '</table>'
+    )
+
+
+def _section_scalars(vparca, original) -> str:
+    out = ['<h3>Scalar state</h3>',
+           '<table><tr><th>path</th><th>vParCa</th><th>vEcoli</th>'
+           '<th>rel Δ</th></tr>']
+    any_row = False
     for label, path in SCALARS:
         a = _reach(vparca, path); b = _reach(original, path)
-        a_num = float(a.asNumber()) if a is not None and hasattr(a, 'asNumber') else (float(a) if a is not None else None)
-        b_num = float(b.asNumber()) if b is not None and hasattr(b, 'asNumber') else (float(b) if b is not None else None)
-        if a_num is not None and b_num is not None:
-            rd = _safe_rel_diff(np.array([a_num]), np.array([b_num]))
-        else:
-            rd = np.nan
-        body_parts.append(
-            f'<tr class="{_row_class(rd, tol_pass, tol_warn)}">'
+        a_num = float(a.asNumber()) if a is not None and hasattr(a, 'asNumber') else (
+            float(a) if isinstance(a, (int, float, np.number)) else None)
+        b_num = float(b.asNumber()) if b is not None and hasattr(b, 'asNumber') else (
+            float(b) if isinstance(b, (int, float, np.number)) else None)
+        if a_num is None and b_num is None:
+            continue
+        any_row = True
+        rd = (_safe_rel_diff(np.array([a_num]), np.array([b_num]))
+              if (a_num is not None and b_num is not None) else float('nan'))
+        out.append(
+            f'<tr class="{_row_class(rd)}">'
             f'<td><code>{label}</code></td>'
             f'<td>{_fmt(a_num)}</td><td>{_fmt(b_num)}</td>'
             f'<td>{_fmt(rd)}</td></tr>')
-    body_parts.append('</table>')
+    out.append('</table>')
+    return '\n'.join(out) if any_row else ''
 
-    # -- 3. Fitted distributions -----------------------------------------
-    body_parts.append('<h2>3. Fitted distributions</h2>')
-    body_parts.append('<p class="meta">Histograms are density-normalized; log10 '
-                      'where the underlying quantity is strictly positive with '
-                      'a large dynamic range.</p>')
-    body_parts.append('<div class="grid">')
-    dist_table_rows = []
+
+def _section_distributions(vparca, original) -> str:
+    figs_html = []
+    tbl = ['<h3>Distribution numerical summary</h3>',
+           '<table><tr><th>distribution</th><th>shape</th>'
+           '<th>max |Δ|</th><th>max rel Δ</th><th>KS p-value</th></tr>']
+    any_dist = False
     for label, path in DISTRIBUTIONS:
         va = _reach(vparca, path); oa = _reach(original, path)
         a = _as_array(va); b = _as_array(oa)
-        shape_a = tuple(a.shape) if a is not None else None
-        shape_b = tuple(b.shape) if b is not None else None
-        if a is not None and b is not None and shape_a == shape_b:
+        if a is None and b is None:
+            continue
+        any_dist = True
+        shape = (a.shape if a is not None else b.shape)
+        if a is not None and b is not None and a.shape == b.shape:
             rd = _safe_rel_diff(a, b); ma = _safe_max_abs(a, b)
             ks = (_scipy_stats.ks_2samp(a.ravel(), b.ravel()).pvalue
                   if HAVE_SCIPY else None)
         else:
-            rd, ma, ks = np.nan, np.nan, None
-        log_scale = (a is not None and a.size and np.all(a[np.isfinite(a)] >= 0)
-                     and (a.max() / max(a.min(), 1e-30) > 100 if a.size else False))
-        img = _hist_overlay(va, oa, 'vParCa', 'original', label, log=log_scale)
-        body_parts.append(
-            f'<div><strong>{label}</strong><br>'
-            f'<img src="data:image/png;base64,{img}"/></div>')
-        dist_table_rows.append((label, shape_a, shape_b, rd, ma, ks))
-    body_parts.append('</div>')
-
-    body_parts.append('<h3>Per-distribution numerical summary</h3>')
-    body_parts.append('<table><tr><th>distribution</th><th>shape (vParCa)</th>'
-                      '<th>shape (orig)</th><th>max |Δ|</th>'
-                      '<th>max rel Δ</th><th>KS p-value</th></tr>')
-    for label, sa, sb, rd, ma, ks in dist_table_rows:
-        body_parts.append(
-            f'<tr class="{_row_class(rd, tol_pass, tol_warn)}">'
+            rd, ma, ks = float('nan'), float('nan'), None
+        log = (a is not None and a.size > 0 and (np.asarray(a) > 0).any()
+               and (float(a.max()) / max(float(a[a > 0].min()) if (a > 0).any() else 1, 1e-30) > 100))
+        img = _hist_overlay(va, oa, label, log=log)
+        figs_html.append(f'<div><strong>{label}</strong><br>'
+                         f'<img src="data:image/png;base64,{img}"/></div>')
+        tbl.append(
+            f'<tr class="{_row_class(rd)}">'
             f'<td><code>{label}</code></td>'
-            f'<td>{sa}</td><td>{sb}</td>'
+            f'<td>{shape}</td>'
             f'<td>{_fmt(ma)}</td><td>{_fmt(rd)}</td><td>{_fmt(ks)}</td></tr>')
-    body_parts.append('</table>')
+    tbl.append('</table>')
+    if not any_dist:
+        return ''
+    return ('<h3>Distributions</h3>'
+            '<div class="grid">' + '\n'.join(figs_html) + '</div>' + '\n' + '\n'.join(tbl))
 
-    # -- 4. cell_specs per-condition -------------------------------------
-    body_parts.append('<h2>4. Initial conditions (cell_specs)</h2>')
+
+def _section_cell_specs(vparca, original_cell_specs) -> str:
     cs_v = _reach(vparca, ('cell_specs',)) or {}
-    cs_o = _reach(original, ('cell_specs',)) or {}
-    common_conditions = sorted(set(cs_v.keys()) & set(cs_o.keys()))
+    cs_o = original_cell_specs or {}
+    if not cs_v and not cs_o:
+        return ''
+    common = sorted(set(cs_v.keys()) & set(cs_o.keys()))
     only_v = sorted(set(cs_v.keys()) - set(cs_o.keys()))
     only_o = sorted(set(cs_o.keys()) - set(cs_v.keys()))
-    body_parts.append(f'<p class="meta">Common conditions: <code>{common_conditions}</code>. '
-                      f'Only vParCa: <code>{only_v}</code>. '
-                      f'Only original: <code>{only_o}</code>.</p>')
-    body_parts.append('<table><tr><th>condition</th>'
-                      + ''.join(f'<th>{f}</th>' for f in CELL_SPECS_FIELDS)
-                      + '</tr>')
-    for cond in common_conditions:
+    out = ['<h3>cell_specs (per-condition max rel Δ)</h3>']
+    if only_v or only_o:
+        out.append(
+            f'<p class="meta">Only vParCa: <code>{only_v}</code>. '
+            f'Only vEcoli: <code>{only_o}</code>.</p>')
+    if not common:
+        return '\n'.join(out) + '<p class="meta">(no shared conditions)</p>'
+    out.append('<table><tr><th>condition</th>'
+               + ''.join(f'<th>{f}</th>' for f in CELL_SPECS_FIELDS)
+               + '</tr>')
+    for cond in common:
         v_spec = cs_v[cond]; o_spec = cs_o[cond]
         cells = []
         for field in CELL_SPECS_FIELDS:
@@ -435,7 +415,6 @@ def build_report(vparca, original, vparca_times, original_times,
                 cells.append('<td class="meta">—</td>'); continue
             aa = _as_array(va); ob = _as_array(oa)
             if aa is None or ob is None:
-                # Scalar with units?
                 try:
                     av = float(va.asNumber()) if hasattr(va, 'asNumber') else float(va)
                     bv = float(oa.asNumber()) if hasattr(oa, 'asNumber') else float(oa)
@@ -449,132 +428,274 @@ def build_report(vparca, original, vparca_times, original_times,
                 continue
             rd = _safe_rel_diff(aa, ob)
             cells.append(f'<td class="{_row_class(rd)}">{_fmt(rd)}</td>')
-        body_parts.append(f'<tr><td><code>{cond}</code></td>{"".join(cells)}</tr>')
-    body_parts.append('</table>')
+        out.append(f'<tr><td><code>{cond}</code></td>{"".join(cells)}</tr>')
+    out.append('</table>')
+    return '\n'.join(out)
 
-    # -- 5. Top divergences ----------------------------------------------
-    body_parts.append('<h2>5. Top divergences (distributions)</h2>')
-    worst = sorted(
-        [(label, rd) for (label, _, _, rd, _, _) in dist_table_rows
-         if rd is not None and np.isfinite(rd)],
-        key=lambda x: -x[1])[:10]
-    if worst:
-        body_parts.append('<table><tr><th>rank</th><th>distribution</th>'
-                          '<th>max rel Δ</th></tr>')
-        for i, (label, rd) in enumerate(worst, 1):
-            body_parts.append(
-                f'<tr class="{_row_class(rd, tol_pass, tol_warn)}">'
-                f'<td>{i}</td><td><code>{label}</code></td>'
-                f'<td>{_fmt(rd)}</td></tr>')
-        body_parts.append('</table>')
-    else:
-        body_parts.append('<p class="meta">no comparable distributions loaded.</p>')
 
-    meta = (f'generated {time.strftime("%Y-%m-%d %H:%M:%S")} — '
-            f'tolerances: pass &lt; {tol_pass:.0e}, warn &lt; {tol_warn:.0e}, '
-            f'else fail')
-    html = _HTML_TEMPLATE.format(meta=meta, body='\n'.join(body_parts))
+# ---------------------------------------------------------------------------
+# Report assembly
+# ---------------------------------------------------------------------------
+
+_HTML_TEMPLATE = r"""<!doctype html>
+<html><head><meta charset='utf-8'>
+<title>vParCa vs ParCa — per-step comparison</title>
+<style>
+  :root {{ --accent: #2563eb; --pass: #ecfdf5; --warn: #fffbeb; --fail: #fef2f2; }}
+  * {{ box-sizing: border-box; }}
+  body  {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+           margin: 0; color: #111; background: #fafafa; }}
+  #layout {{ display: grid; grid-template-columns: 220px 1fr; min-height: 100vh; }}
+  nav    {{ position: sticky; top: 0; height: 100vh; overflow-y: auto;
+            background: #111; color: #eee; padding: 18px 12px; }}
+  nav h2  {{ color: #fff; font-size: 14px; margin: 0 0 12px 4px;
+             letter-spacing: .5px; text-transform: uppercase; }}
+  nav a   {{ display: block; color: #ccc; text-decoration: none;
+             padding: 6px 10px; border-radius: 4px; font-size: 13px;
+             margin-bottom: 2px; }}
+  nav a:hover {{ background: #1f2937; color: #fff; }}
+  nav a.active {{ background: var(--accent); color: #fff; }}
+  nav .status-pass {{ color: #34d399; }}
+  nav .status-warn {{ color: #fbbf24; }}
+  nav .status-fail {{ color: #f87171; }}
+  nav .status-na   {{ color: #6b7280; }}
+  main   {{ padding: 24px 40px; max-width: 1100px; }}
+  h1     {{ border-bottom: 3px solid var(--accent); padding-bottom: 6px; }}
+  section {{ margin-bottom: 48px; padding: 24px 28px;
+             background: #fff; border-radius: 8px;
+             box-shadow: 0 1px 3px rgba(0,0,0,.06); }}
+  section h2 {{ margin-top: 0; border-bottom: 1px solid #eee; padding-bottom: 6px; }}
+  section h3 {{ margin-top: 24px; color: #374151; }}
+  table  {{ border-collapse: collapse; width: 100%; font-size: 13px;
+            margin-top: 8px; }}
+  th, td {{ border: 1px solid #e5e7eb; padding: 5px 8px; text-align: left; }}
+  th     {{ background: #f3f4f6; }}
+  tr.pass {{ background: var(--pass); }}
+  tr.warn {{ background: var(--warn); }}
+  tr.fail {{ background: var(--fail); }}
+  td.pass {{ background: var(--pass); }}
+  td.warn {{ background: var(--warn); }}
+  td.fail {{ background: var(--fail); }}
+  img    {{ max-width: 100%; border: 1px solid #eee; margin: 6px 0;
+            background: #fff; }}
+  .grid  {{ display: grid; grid-template-columns: 1fr 1fr; gap: 10px 16px;
+            margin-top: 10px; }}
+  code   {{ background: #f3f4f6; padding: 1px 4px; border-radius: 3px; }}
+  .meta  {{ color: #6b7280; font-size: 12px; }}
+  .banner-na {{ background: #f9fafb; border-left: 4px solid #9ca3af;
+                padding: 10px 14px; color: #6b7280; }}
+</style>
+<script>
+  // Highlight the current section in the left nav while scrolling.
+  document.addEventListener('DOMContentLoaded', () => {{
+    const sections = document.querySelectorAll('section[id]');
+    const links    = document.querySelectorAll('nav a[href^="#"]');
+    const byId = {{}};
+    links.forEach(a => byId[a.getAttribute('href').slice(1)] = a);
+    const io = new IntersectionObserver(entries => {{
+      entries.forEach(e => {{
+        if (e.isIntersecting) {{
+          links.forEach(a => a.classList.remove('active'));
+          const a = byId[e.target.id]; if (a) a.classList.add('active');
+        }}
+      }});
+    }}, {{ rootMargin: '-45% 0px -55% 0px' }});
+    sections.forEach(s => io.observe(s));
+  }});
+</script>
+</head><body>
+<div id='layout'>
+<nav>
+  <h2>vParCa report</h2>
+  <a href="#overview">Overview</a>
+  {nav_links}
+</nav>
+<main>
+<h1>vParCa vs vEcoli ParCa</h1>
+<p class='meta'>{meta}</p>
+{sections}
+</main>
+</div></body></html>"""
+
+
+def _runtime_bar(vparca_times: Dict[str, float],
+                 original_times: Dict[str, float]) -> str:
+    steps = [f'step_{n}' for n in range(1, 10)]
+    v = [vparca_times.get(s, 0.0)  for s in steps]
+    o = [original_times.get(s, 0.0) for s in steps]
+    fig, ax = plt.subplots(figsize=(8, 3.2))
+    x = np.arange(len(steps)); w = 0.38
+    ax.bar(x - w/2, v, w, label='vParCa', color='#2563eb')
+    ax.bar(x + w/2, o, w, label='vEcoli',  color='#dc2626')
+    ax.set_xticks(x); ax.set_xticklabels([f'step {n}' for n in range(1, 10)],
+                                          rotation=30)
+    ax.set_ylabel('seconds')
+    ax.set_title('Per-step runtime')
+    ax.set_yscale('symlog', linthresh=1)
+    ax.grid(True, axis='y', alpha=0.3); ax.legend(fontsize=9)
+    return _b64fig(fig)
+
+
+def build_report(vparca_outdir: str, vecoli_dir: Optional[str],
+                 output_path: str) -> None:
+    # Load runtimes.
+    vparca_rt_path = os.path.join(vparca_outdir, 'runtimes.json')
+    vparca_rt = json.load(open(vparca_rt_path)) if os.path.exists(vparca_rt_path) else {}
+    # vEcoli's --save-intermediates doesn't write a runtimes.json; we
+    # parse its per-stage "Ran X in Ys" prints if a log is available.
+    original_rt = _maybe_parse_vecoli_runtimes(vecoli_dir)
+
+    # Per-step section data — status ('pass' / 'warn' / 'fail' / 'na')
+    # is a quick summary for the left-nav colored dots.
+    section_items = []
+    for step in STEPS:
+        n = step['n']
+        vparca_pkl = os.path.join(vparca_outdir, step['vparca'])
+        vecoli_sd  = (os.path.join(vecoli_dir, f"sim_data_{step['vecoli_stub']}.cPickle")
+                      if vecoli_dir else None)
+        vecoli_cs  = (os.path.join(vecoli_dir, f"cell_specs_{step['vecoli_stub']}.cPickle")
+                      if vecoli_dir else None)
+
+        vparca_state = _load_pickle(vparca_pkl)
+        original     = _load_pickle(vecoli_sd)
+        original_cs  = _load_pickle(vecoli_cs)
+
+        # Attach cell_specs to the original sim_data if present.
+        if original is not None and original_cs is not None:
+            try:
+                original.cell_specs = original_cs
+            except Exception:
+                pass
+
+        vt = vparca_rt.get(f'step_{n}')
+        ot = original_rt.get(step['vecoli_stub'])
+
+        section_id = f'step_{n}'
+        parts = []
+        parts.append(f'<section id="{section_id}">')
+        parts.append(f'<h2>Step {n} — {step["name"]}</h2>')
+        parts.append(f'<p class="meta">{step["long"]}</p>')
+
+        # Availability banner.
+        have_vp = vparca_state is not None
+        have_ve = original is not None
+        if not have_vp and not have_ve:
+            parts.append('<div class="banner-na">No checkpoint on either side. '
+                         'Run `scripts/parca_bigraph.py` for vParCa and '
+                         '`runscripts/parca.py --save-intermediates` for vEcoli.</div>')
+            status = 'na'
+        elif not have_ve:
+            parts.append('<div class="banner-na">vEcoli reference pickle unavailable '
+                         '— showing vParCa side only.</div>')
+            status = 'warn'
+        elif not have_vp:
+            parts.append('<div class="banner-na">vParCa checkpoint unavailable '
+                         '— showing vEcoli side only.</div>')
+            status = 'warn'
+        else:
+            status = 'pass'
+
+        parts.append(_section_runtime(vt, ot))
+        parts.append('<h3>Declared data flow</h3>')
+        parts.append(_port_table(step['module']))
+
+        if have_vp and have_ve:
+            parts.append(_section_scalars(vparca_state, original))
+            parts.append(_section_distributions(vparca_state, original))
+            parts.append(_section_cell_specs(vparca_state, original_cs))
+
+        parts.append('</section>')
+        section_items.append({
+            'n': n, 'name': step['name'], 'status': status,
+            'html': '\n'.join(parts),
+        })
+
+    # Overview section.
+    overview = ['<section id="overview">', '<h2>Overview</h2>']
+    overview.append(f'<p>Generated {time.strftime("%Y-%m-%d %H:%M:%S")}</p>')
+    overview.append(f'<p class="meta">vParCa checkpoints: <code>{vparca_outdir}</code>. '
+                    f'vEcoli intermediates: <code>{vecoli_dir}</code>.</p>')
+    overview.append('<h3>Per-step runtime</h3>')
+    overview.append(f'<img src="data:image/png;base64,{_runtime_bar(vparca_rt, original_rt)}"/>')
+    overview.append('<h3>Step-by-step availability</h3>')
+    overview.append('<table><tr><th>step</th><th>vParCa</th><th>vEcoli</th>'
+                    '<th>compared</th></tr>')
+    for step, item in zip(STEPS, section_items):
+        n = step['n']
+        vp_ok = os.path.exists(os.path.join(vparca_outdir, step['vparca']))
+        ve_ok = (vecoli_dir is not None and
+                 os.path.exists(os.path.join(vecoli_dir,
+                                             f"sim_data_{step['vecoli_stub']}.cPickle")))
+        overview.append(
+            f'<tr><td>step {n} — {step["name"]}</td>'
+            f'<td>{"✓" if vp_ok else "—"}</td>'
+            f'<td>{"✓" if ve_ok else "—"}</td>'
+            f'<td>{"yes" if vp_ok and ve_ok else "no"}</td></tr>')
+    overview.append('</table>')
+    overview.append('</section>')
+
+    nav_links = '\n'.join(
+        f'<a href="#step_{it["n"]}"><span class="status-{it["status"]}">●</span> '
+        f'Step {it["n"]} — {it["name"]}</a>'
+        for it in section_items
+    )
+
+    meta = (f'Generated {time.strftime("%Y-%m-%d %H:%M:%S")} — '
+            f'tolerance: pass &lt; 1e-6, warn &lt; 1e-3')
+    sections_html = '\n'.join(overview) + '\n' + \
+                    '\n'.join(it['html'] for it in section_items)
+
+    html = _HTML_TEMPLATE.format(
+        nav_links=nav_links, meta=meta, sections=sections_html)
 
     os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
     with open(output_path, 'w') as f:
         f.write(html)
-    print(f'wrote {output_path} ({os.path.getsize(output_path) / 1024:.1f} KB)')
+    size_kb = os.path.getsize(output_path) / 1024
+    print(f'wrote {output_path} ({size_kb:.1f} KB)')
+
+
+def _maybe_parse_vecoli_runtimes(vecoli_dir: Optional[str]) -> Dict[str, float]:
+    """Best-effort: look for a 'Ran X in Ys' log next to the pickles."""
+    if not vecoli_dir:
+        return {}
+    for candidate in (os.path.join(vecoli_dir, 'runtimes.json'),
+                      os.path.join(os.path.dirname(vecoli_dir), 'runtimes.json')):
+        if os.path.exists(candidate):
+            try:
+                return json.load(open(candidate))
+            except Exception:
+                pass
+    # Parse from vecoli_parca logs in /tmp if present.
+    for log in ('/tmp/vecoli_intermediates.log',
+                '/tmp/vecoli_solo.log', '/tmp/vecoli_parca_run3.log'):
+        if os.path.exists(log):
+            import re
+            out = {}
+            for m in re.finditer(r'Ran (\S+) in (\d+) s', open(log).read()):
+                out[m.group(1)] = float(m.group(2))
+            if out:
+                return out
+    return {}
 
 
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
-def _alias_vivarium_ecoli_modules():
-    """Make vivarium-ecoli pickles load inside the vParCa interpreter.
-
-    vEcoli's pickles reference top-level paths like ``reconstruction.ecoli
-    .simulation_data.SimulationDataEcoli``, which don't exist in vParCa
-    (they're under ``vparca.reconstruction.ecoli.*``).  Import the vendored
-    tree, then alias every loaded submodule to its top-level name."""
-    import sys, importlib
-    # Pre-load the substrate the pickle will need.
-    for modpath in (
-        'vparca.reconstruction.ecoli.simulation_data',
-        'vparca.reconstruction.ecoli.dataclasses',
-        'vparca.wholecell.utils.units',
-        'vparca.ecoli.library.schema',
-    ):
-        try:
-            importlib.import_module(modpath)
-        except Exception:
-            pass
-    # Register aliases.
-    for name, mod in list(sys.modules.items()):
-        for top in ('vparca.reconstruction', 'vparca.wholecell', 'vparca.ecoli'):
-            if name == top or name.startswith(top + '.'):
-                alias = name[len('vparca.'):]
-                sys.modules.setdefault(alias, mod)
-
-
-def _load_pickle(path: str) -> Any:
-    _alias_vivarium_ecoli_modules()
-    with open(path, 'rb') as f:
-        return pickle.load(f)
-
-
-def _load_json(path: str) -> Dict:
-    with open(path) as f:
-        return json.load(f)
-
-
 def main():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument('--vparca-state', type=str,
-                   help='pickle of composite.state from scripts/parca_bigraph.py')
-    p.add_argument('--original-sim-data', type=str,
-                   help='pickle of a fitted SimulationDataEcoli from vivarium-ecoli')
-    p.add_argument('--original-cell-specs', type=str,
-                   help='pickle of a cell_specs dict from vivarium-ecoli '
-                        '(--save-intermediates writes this separately)')
-    p.add_argument('--vparca-runtimes', type=str,
-                   help='JSON {step_N: seconds, …} for vParCa (optional)')
-    p.add_argument('--original-runtimes', type=str,
-                   help='JSON {step_N: seconds, …} for the original ParCa')
-    p.add_argument('--run', action='store_true',
-                   help='run both engines from scratch (not yet implemented)')
-    p.add_argument('--mode', choices=['fast', 'full'], default='fast',
-                   help='(--run only) debug (fast) vs full ParCa')
-    p.add_argument('-o', '--output', type=str, default='out/compare/report.html')
-    p.add_argument('--tol-pass', type=float, default=1e-6)
-    p.add_argument('--tol-warn', type=float, default=1e-3)
+    p.add_argument('--vparca-outdir', default='out/sim_data',
+                   help='dir with checkpoint_step_N.pkl + runtimes.json')
+    p.add_argument('--original-intermediates', default='out/original_intermediates',
+                   help='dir with sim_data_<step>.cPickle + cell_specs_<step>.cPickle')
+    p.add_argument('-o', '--output', default='out/compare/report.html')
     args = p.parse_args()
 
-    if args.run:
-        raise SystemExit(
-            "--run is a stub; run scripts/parca_bigraph.py and vivarium-ecoli's "
-            "runscripts/parca.py separately, then pass --vparca-state and "
-            "--original-sim-data here.")
-
-    if not args.vparca_state or not args.original_sim_data:
-        raise SystemExit(
-            "must provide --vparca-state and --original-sim-data "
-            "(or use --run when that path is implemented)")
-
-    vparca_state = _load_pickle(args.vparca_state)
-    original     = _load_pickle(args.original_sim_data)
-    # vivarium-ecoli's --save-intermediates splits sim_data and
-    # cell_specs into separate pickles.  Splice cell_specs onto the
-    # loaded sim_data so ``_reach(orig, ('cell_specs',))`` returns it.
-    if args.original_cell_specs:
-        cs = _load_pickle(args.original_cell_specs)
-        try:
-            original.cell_specs = cs
-        except Exception:
-            pass
-    vparca       = _sim_data_like_from_vparca_state(vparca_state)
-
-    vt = _load_json(args.vparca_runtimes)   if args.vparca_runtimes   else {}
-    ot = _load_json(args.original_runtimes) if args.original_runtimes else {}
-
-    build_report(vparca, original, vt, ot, args.output,
-                 tol_pass=args.tol_pass, tol_warn=args.tol_warn)
+    vecoli_dir = args.original_intermediates if os.path.isdir(
+        args.original_intermediates) else None
+    build_report(args.vparca_outdir, vecoli_dir, args.output)
 
 
 if __name__ == '__main__':
