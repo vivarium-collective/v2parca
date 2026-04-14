@@ -15,7 +15,7 @@ from ecoli.library.schema import (
     counts,
     MetadataArray,
 )
-from ecoli.processes.polypeptide_elongation import (
+from vparca.trna_charging import (
     calculate_trna_charging,
     REMOVED_FROM_CHARGING,
     MICROMOLAR_UNITS,
