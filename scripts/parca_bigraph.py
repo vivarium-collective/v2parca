@@ -3,20 +3,21 @@
 ParCa Pipeline as Process-Bigraph Steps
 ========================================
 
-Runs the full ParCa parameter calculator using process-bigraph Step/Composite
-infrastructure.  This is functionally equivalent to ``parca_workflow.py`` but
-orchestrates stages via the process-bigraph dependency engine.
+Runs the full vParCa pipeline — 9 Steps wired to a nested bigraph store
+mirroring ``SimulationDataEcoli``'s structure — and pickles the final
+store state.
 
 Usage::
 
-    # Fast run (reduced TF conditions)
-    python runscripts/parca_bigraph.py --mode fast --cpus 4
+    # Fast run (reduced TF conditions via debug=True, ~30 min)
+    python scripts/parca_bigraph.py --mode fast --cpus 4
 
-    # Full production run
-    python runscripts/parca_bigraph.py --mode full --cpus 4
+    # Full production run (several hours)
+    python scripts/parca_bigraph.py --mode full --cpus 4
 
-    # With custom output directory
-    python runscripts/parca_bigraph.py --mode fast --cpus 4 -o reconstruction/sim_data
+    # Custom output directory and Km-fitting cache
+    python scripts/parca_bigraph.py --mode fast --cpus 4 \\
+        -o out/sim_data --cache-dir out/cache
 """
 
 import argparse
@@ -29,10 +30,8 @@ from pathlib import Path
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from vparca.composite import build_parca_composite
 from vparca.reconstruction.ecoli.knowledge_base_raw import KnowledgeBaseEcoli
-from vparca.composite import run_parca
-from vparca.wholecell.utils import constants
-import vparca.wholecell.utils.filepath as fp
 
 
 def main():
@@ -41,95 +40,69 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
-
     parser.add_argument(
-        "--mode",
-        choices=["fast", "full"],
-        default="fast",
-        help="Run mode: fast (~20-30 min, reduced TF conditions via debug flag), "
-             "full (2-4 hours, all conditions)",
+        "--mode", choices=["fast", "full"], default="fast",
+        help="fast: debug=True (reduced TF conditions, ~30 min); "
+             "full: all conditions (several hours).",
     )
-    parser.add_argument(
-        "-c", "--cpus",
-        type=int,
-        default=1,
-        help="Number of CPUs for parallel stages",
-    )
-    parser.add_argument(
-        "-o", "--outdir",
-        type=str,
-        default="reconstruction/sim_data",
-        help="Output directory",
-    )
-    parser.add_argument(
-        "--cache-dir",
-        type=str,
-        default=None,
-        help="Cache directory for Km optimization (default: <outdir>/cache)",
-    )
-    parser.add_argument(
-        "--no-operons",
-        action="store_true",
-        help="Disable operons in raw data",
-    )
-
+    parser.add_argument("-c", "--cpus", type=int, default=1,
+                        help="Parallelism for Steps 4 and 5.")
+    parser.add_argument("-o", "--outdir", type=str, default="out/sim_data",
+                        help="Output directory for pickled state.")
+    parser.add_argument("--cache-dir", type=str, default=None,
+                        help="Cache directory for Km optimization "
+                             "(default: <outdir>/cache).")
+    parser.add_argument("--no-operons", action="store_true",
+                        help="Disable operons in the KB.")
     args = parser.parse_args()
 
     outdir = os.path.abspath(args.outdir)
-    kb_directory = fp.makedirs(outdir, constants.KB_DIR)
+    os.makedirs(outdir, exist_ok=True)
     cache_dir = args.cache_dir or os.path.join(outdir, "cache")
     os.makedirs(cache_dir, exist_ok=True)
 
-    # --- Load raw data ---
-    print(f"\n{'=' * 60}")
-    print(f"ParCa Bigraph Pipeline ({args.mode} mode)")
-    print(f"{'=' * 60}")
+    print(f"\n{'=' * 60}\n  vParCa — {args.mode} mode\n{'=' * 60}")
 
     t0 = time.time()
-    print(f"\n[{time.strftime('%H:%M:%S')}] Loading raw_data (operons={not args.no_operons})")
-    raw_data = KnowledgeBaseEcoli(
+    print(f"[{time.strftime('%H:%M:%S')}] Loading raw_data (operons={not args.no_operons})")
+    raw = KnowledgeBaseEcoli(
         operons_on=not args.no_operons,
-        remove_rrna_operons=False,
-        remove_rrff=False,
-        stable_rrna=False,
-        new_genes_option="off",
+        remove_rrna_operons=False, remove_rrff=False, stable_rrna=False,
     )
-    raw_data_file = os.path.join(kb_directory, constants.SERIALIZED_RAW_DATA)
-    with open(raw_data_file, "wb") as f:
-        pickle.dump(raw_data, f, protocol=pickle.HIGHEST_PROTOCOL)
-    print(f"    Raw data loaded in {time.time() - t0:.1f}s")
+    print(f"    raw_data loaded in {time.time() - t0:.1f}s")
 
-    # --- Build pipeline kwargs ---
-    kwargs = {
-        'cpus': args.cpus,
-        'debug': args.mode == 'fast',
-        'cache_dir': cache_dir,
-        'variable_elongation_transcription': True,
-        'variable_elongation_translation': False,
-        'disable_ribosome_capacity_fitting': False,
-        'disable_rnapoly_capacity_fitting': False,
-    }
-
-    # --- Run pipeline ---
-    print(f"\n[{time.strftime('%H:%M:%S')}] Running ParCa pipeline as bigraph Steps...")
     t1 = time.time()
-    sim_data = run_parca(raw_data, **kwargs)
-    pipeline_time = time.time() - t1
-    print(f"\n[{time.strftime('%H:%M:%S')}] Pipeline completed in {pipeline_time:.1f}s")
+    print(f"\n[{time.strftime('%H:%M:%S')}] Running ParCa pipeline ...")
+    composite = build_parca_composite(
+        raw,
+        debug=(args.mode == 'fast'),
+        cpus=args.cpus,
+        cache_dir=cache_dir,
+    )
+    print(f"\n[{time.strftime('%H:%M:%S')}] Pipeline completed in "
+          f"{time.time() - t1:.1f}s")
 
-    # --- Save sim_data ---
-    sim_data_file = os.path.join(kb_directory, constants.SERIALIZED_SIM_DATA_FILENAME)
-    print(f"\n[{time.strftime('%H:%M:%S')}] Saving sim_data...")
-    with open(sim_data_file, "wb") as f:
-        pickle.dump(sim_data, f, protocol=pickle.HIGHEST_PROTOCOL)
-    sim_data_size = os.path.getsize(sim_data_file)
-    print(f"    Saved ({sim_data_size / (1024 * 1024):.1f} MB)")
+    # Pickle the full store state — subsystem objects + top-level dicts +
+    # cell_specs entries.  Strip the tick leaves (sequencing tokens, not
+    # useful downstream) and the internal bigraph-schema bookkeeping keys.
+    state = {k: v for k, v in composite.state.items()
+             if not k.startswith('tick_')
+             and not k.startswith('_')
+             and k not in {'global_time', 'initialize', 'input_adjustments',
+                           'basal_specs', 'tf_condition_specs', 'fit_condition',
+                           'promoter_binding', 'adjust_promoters',
+                           'set_conditions', 'final_adjustments'}}
 
-    # --- Summary ---
-    total_time = time.time() - t0
+    out_path = os.path.join(outdir, "parca_state.pkl")
+    with open(out_path, "wb") as f:
+        pickle.dump(state, f, protocol=pickle.HIGHEST_PROTOCOL)
+    size_mb = os.path.getsize(out_path) / (1024 * 1024)
+
+    total = time.time() - t0
     print(f"\n{'=' * 60}")
-    print(f"Total time: {total_time:.1f}s ({total_time / 60:.1f} min)")
-    print(f"Output: {sim_data_file}")
+    print(f"Total time:  {total:.1f}s ({total / 60:.1f} min)")
+    print(f"Output:      {out_path} ({size_mb:.1f} MB)")
+    print(f"Store keys:  {sorted(state.keys())}")
     print(f"{'=' * 60}\n")
 
 
