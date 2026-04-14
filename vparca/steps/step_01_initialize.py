@@ -79,6 +79,7 @@ _DATA_LEAF_PORTS = {
     'conditions':                       'overwrite',
     'condition_to_doubling_time':       'overwrite',
     'tf_to_fold_change':                'overwrite',
+    'tf_to_direction':                  'overwrite',
     'condition_active_tfs':             'overwrite',
     'condition_inactive_tfs':           'overwrite',
     # Seed cell_specs as an empty dict — steps 3–9 populate per-condition
@@ -155,6 +156,7 @@ class InitializeStep(Step):
             'conditions':                 dict(sim_data.conditions),
             'condition_to_doubling_time': dict(sim_data.condition_to_doubling_time),
             'tf_to_fold_change':          dict(sim_data.tf_to_fold_change),
+            'tf_to_direction':            dict(sim_data.tf_to_direction),
             'condition_active_tfs':       dict(sim_data.condition_active_tfs),
             'condition_inactive_tfs':     dict(sim_data.condition_inactive_tfs),
             'cell_specs':                 {},

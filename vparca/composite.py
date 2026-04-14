@@ -62,6 +62,7 @@ STORE_PATH.update({
     'conditions':                       ['conditions'],
     'condition_to_doubling_time':       ['condition_to_doubling_time'],
     'tf_to_fold_change':                ['tf_to_fold_change'],
+    'tf_to_direction':                  ['tf_to_direction'],
     'condition_active_tfs':             ['condition_active_tfs'],
     'condition_inactive_tfs':           ['condition_inactive_tfs'],
     'cell_specs':                       ['cell_specs'],
