@@ -44,7 +44,11 @@ from process_bigraph import Step
 from vparca.steps._facade import make_sim_data_facade
 
 # Constants (mirrored from fit_sim_data_1.py)
-N_SEEDS = 10
+# Per-condition seed count for calculateBulkDistributions.  Default 10
+# matches vivarium-ecoli; set VPARCA_N_SEEDS=3 (or any small int) to
+# trade fitting variance for ~3x speed in step 5.
+import os as _os
+N_SEEDS = int(_os.environ.get('VPARCA_N_SEEDS', '10'))
 VERBOSE = 1
 
 

@@ -47,8 +47,10 @@ def main():
         help="fast: debug=True (reduced TF conditions, ~30 min); "
              "full: all conditions (several hours).",
     )
-    parser.add_argument("-c", "--cpus", type=int, default=1,
-                        help="Parallelism for Steps 4 and 5.")
+    parser.add_argument("-c", "--cpus", type=int, default=8,
+                        help="Parallelism for Steps 4 and 5 (default 8).  "
+                             "Step 5 runs ~9 conditions each ~6 min serially, "
+                             "so cpus=8 keeps them mostly in parallel.")
     parser.add_argument("-o", "--outdir", type=str, default="out/sim_data",
                         help="Output directory for pickled state.")
     parser.add_argument("--cache-dir", type=str, default=None,
@@ -87,6 +89,42 @@ def main():
         remove_rrna_operons=False, remove_rrff=False, stable_rrna=False,
     )
     print(f"    raw_data loaded in {time.time() - t0:.1f}s")
+
+    # ---- Per-step disk checkpointing -----------------------------------
+    # Wrap each Step class's .update so its output ports are pickled to
+    # disk after the step completes.  If a later step crashes, you can
+    # resume from any successful step via:
+    #   --resume-from-step N --resume-pickle <outdir>/checkpoint_step_<N-1>.pkl
+    # No-op when --resume-from-step > 1 (we already have a checkpoint).
+    if args.resume_from_step <= 1:
+        from vparca.steps import ALL_STEP_CLASSES
+        STEP_NUM_BY_CLASS = {
+            'InitializeStep': 1, 'InputAdjustmentsStep': 2, 'BasalSpecsStep': 3,
+            'TfConditionSpecsStep': 4, 'FitConditionStep': 5,
+            'PromoterBindingStep': 6, 'AdjustPromotersStep': 7,
+            'SetConditionsStep': 8, 'FinalAdjustmentsStep': 9,
+        }
+        # Track running checkpoint = accumulated outputs of all completed steps.
+        running_checkpoint = {}
+        def _wrap(cls, step_n):
+            orig = cls.update
+            def update(self, state):
+                out = orig(self, state)
+                running_checkpoint.update(out)
+                ckpt_path = os.path.join(outdir, f'checkpoint_step_{step_n}.pkl')
+                try:
+                    with open(ckpt_path, 'wb') as f:
+                        pickle.dump(dict(running_checkpoint), f,
+                                    protocol=pickle.HIGHEST_PROTOCOL)
+                    print(f"    checkpoint -> {ckpt_path}")
+                except Exception as e:
+                    print(f"    WARN: checkpoint after step {step_n} failed: {e}")
+                return out
+            cls.update = update
+        for name, cls in ALL_STEP_CLASSES.items():
+            n = STEP_NUM_BY_CLASS.get(name)
+            if n is not None:
+                _wrap(cls, n)
 
     t1 = time.time()
     print(f"\n[{time.strftime('%H:%M:%S')}] Running ParCa pipeline ...")
