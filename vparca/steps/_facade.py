@@ -27,7 +27,15 @@ from types import SimpleNamespace
 
 class _FacadeProxy:
     """Attribute-lookup that first consults the ``SimpleNamespace`` of
-    wired ports, then falls back to the root SimulationDataEcoli."""
+    wired ports, then falls back to the root SimulationDataEcoli.
+
+    Carefully written to be pickle-safe: ``__getattr__`` is only called
+    when normal lookup fails, and it uses ``object.__getattribute__``
+    internally so a missing ``_ns`` slot (e.g. during unpickling before
+    state restore) raises ``AttributeError`` cleanly instead of
+    recursing.  Private / dunder names short-circuit to AttributeError
+    for the same reason.
+    """
 
     __slots__ = ('_ns', '_root')
 
@@ -36,20 +44,42 @@ class _FacadeProxy:
         object.__setattr__(self, '_root', root)
 
     def __getattr__(self, name):
-        # Ports take priority.
-        if hasattr(self._ns, name):
-            return getattr(self._ns, name)
-        if self._root is not None:
-            return getattr(self._root, name)
+        # Never fall through on private names — pickle and copy poke at
+        # __reduce_ex__, __class__, __setstate__, _ns, _root during
+        # (de)serialization, and routing those to the wrapped objects
+        # loops or masks real errors.
+        if name.startswith('_'):
+            raise AttributeError(name)
+        try:
+            ns = object.__getattribute__(self, '_ns')
+        except AttributeError:
+            raise AttributeError(name)
+        if hasattr(ns, name):
+            return getattr(ns, name)
+        try:
+            root = object.__getattribute__(self, '_root')
+        except AttributeError:
+            raise AttributeError(name)
+        if root is not None:
+            return getattr(root, name)
         raise AttributeError(name)
 
     def __setattr__(self, name, value):
-        # Set on the namespace *and* the root so any sub-function that
-        # mutates a top-level attr (e.g. fitPromoterBoundProbability does
-        # ``sim_data.pPromoterBound = …``) is visible on both surfaces.
-        setattr(self._ns, name, value)
-        if self._root is not None:
-            setattr(self._root, name, value)
+        # Private names go straight to the slot — don't try to propagate
+        # to _ns / _root (they may not exist yet, e.g. during unpickle).
+        if name in ('_ns', '_root'):
+            object.__setattr__(self, name, value)
+            return
+        ns = object.__getattribute__(self, '_ns')
+        setattr(ns, name, value)
+        root = object.__getattribute__(self, '_root')
+        if root is not None:
+            setattr(root, name, value)
+
+    def __reduce__(self):
+        # Rebuild from (ns, root) directly — no pickling through the
+        # proxy's recursive __getattr__ path.
+        return (_FacadeProxy, (self._ns, self._root))
 
 
 def make_sim_data_facade(ports):
