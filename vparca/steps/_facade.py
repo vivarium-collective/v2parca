@@ -66,10 +66,19 @@ def make_sim_data_facade(ports):
     data_leaf_attrs = [
         'tf_to_active_inactive_conditions', 'conditions',
         'condition_to_doubling_time', 'tf_to_fold_change',
+        'tf_to_direction',
         'condition_active_tfs', 'condition_inactive_tfs',
+        'translation_supply_rate',
+        'expected_dry_mass_increase_dict',
     ]
     for name in data_leaf_attrs:
         if name in ports:
             setattr(sd, name, ports[name])
+
+    # expected_dry_mass_increase_dict is accessed as
+    # ``sim_data.expectedDryMassIncreaseDict`` in the original code;
+    # mirror both attribute spellings for compatibility.
+    if 'expected_dry_mass_increase_dict' in ports:
+        sd.expectedDryMassIncreaseDict = ports['expected_dry_mass_increase_dict']
 
     return sd
