@@ -1,45 +1,38 @@
-"""
-Step 1 — initialize (scatter).
+"""Step 1 — initialize (scatter).  Bootstrap the pipeline from raw KB data.
 
-Runs ``SimulationDataEcoli.initialize(raw_data=...)`` internally, then
-scatters the resulting subsystems and top-level data structures out as
-explicit output ports.  No ``sim_data`` blob leaves this Step; downstream
-Steps each wire ports to the subset of subsystems / leaves they actually
-need, making the dataflow fully explicit in the composite's wires.
+Takes the ``KnowledgeBaseEcoli`` loaded from the flat-file TSVs and builds
+the nested ``SimulationDataEcoli`` object, then scatters its nine subsystem
+dataclasses and twenty-odd top-level dicts onto their natural store paths
+in the bigraph. No ``sim_data`` blob is passed downstream; every subsequent
+step wires only the ports it needs.
 
-raw_data enters through ``config`` (not a store port) so bigraph-schema
-doesn't introspect the KnowledgeBaseEcoli's deep internals at composite
-construction time.
+Mathematical Model
+------------------
 
-Outputs (port → store path)
----------------------------
+Inputs:
+- raw_data: a ``KnowledgeBaseEcoli`` instance holding every flat-file table
+  (genes, RNAs, proteins, reactions, media, mass fractions, ...) parsed
+  from ``v2parca/reconstruction/ecoli/flat/``. Delivered as a ``config``
+  parameter (not a port wire) so bigraph-schema does not introspect the
+  KB's deep internals at composite-construction time.
 
-Subsystem objects — at their natural nested paths in the store tree:
+Parameters:
+- debug (bool): forwarded to downstream steps; no effect on this one.
 
-  transcription                    process / transcription
-  translation                      process / translation
-  metabolism                       process / metabolism
-  rna_decay                        process / rna_decay
-  complexation                     process / complexation
-  equilibrium                      process / equilibrium
-  two_component_system             process / two_component_system
-  transcription_regulation         process / transcription_regulation
-  replication                      process / replication
-  mass                             mass
-  constants                        constants
-  growth_rate_parameters           growth_rate_parameters
-  adjustments                      adjustments
-  molecule_groups                  molecule_groups
-  bulk_molecules                   internal_state / bulk_molecules
+Calculation:
+- sim_data = SimulationDataEcoli()
+- sim_data.initialize(raw_data=raw_data, basal_expression_condition=...)
+- split sim_data into its constituent subsystem objects and data dicts.
 
-Pure-data top-level dicts:
-
-  tf_to_active_inactive_conditions tf_to_active_inactive_conditions
-  conditions                       conditions
-  condition_to_doubling_time       condition_to_doubling_time
-  tf_to_fold_change                tf_to_fold_change
-  condition_active_tfs             condition_active_tfs
-  condition_inactive_tfs           condition_inactive_tfs
+Outputs:
+- Subsystem objects on ``process/*`` stores: transcription, translation,
+  metabolism, rna_decay, complexation, equilibrium, two_component_system,
+  transcription_regulation, replication.
+- Top-level dataclass stores: mass, constants, growth_rate_parameters,
+  adjustments, molecule_groups, molecule_ids, relation, getter, external_state.
+- Pure-data dicts: conditions, condition_to_doubling_time, tf_to_fold_change,
+  tf_to_active_inactive_conditions, condition_active_tfs, condition_inactive_tfs.
+- bulk_molecules at ``internal_state/bulk_molecules``.
 """
 
 import time

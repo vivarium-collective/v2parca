@@ -1,31 +1,35 @@
-"""
-Step 2 — input_adjustments.  Apply pre-fitted adjustments to translation
-efficiencies, RNA expression, and degradation rates.
+"""Step 2 — input_adjustments.  Apply literature-curated overrides before fitting.
 
-Port surface: the step wires to three *subsystem objects* — ``transcription``,
-``translation``, ``adjustments`` — and one pure-data leaf,
-``tf_to_active_inactive_conditions``.  The subsystem objects stay at their
-natural nested paths in the bigraph store (``process/transcription`` etc.);
-this Step reads their fields, mutates the arrays in place, and returns the
-(mutated) objects on its output ports so downstream Steps see the updates.
+A handful of genes are known from experiment to need their RNA
+expression, translation efficiency, or degradation rate multiplied by a
+fixed factor before any fitting begins. This step reads those factors
+from the ``adjustments`` dataclass and applies them in place.
 
-No ``sim_data`` blob, no ``cell_specs`` blob, no extract/merge wrappers.
-The five pure numpy helpers (``adjust_translation_efficiencies``,
-``balance_translation_efficiencies``, ``adjust_rna_expression``,
-``adjust_rna_deg_rates``, ``adjust_protein_deg_rates``) are unchanged.
+Mathematical Model
+------------------
 
-Store paths wired by the composite
-----------------------------------
+Inputs:
+- transcription.rna_expression (basal) and transcription.rna_deg_rates.
+- translation.translation_efficiencies_by_monomer.
+- adjustments: a lookup table of {gene_id: multiplier} for each kind of
+  adjustment, shipped in ``flat/adjustments/``.
+- tf_to_active_inactive_conditions (reduced to one entry in debug mode).
 
-READS  ``transcription``                        process / transcription
-       ``translation``                          process / translation
-       ``adjustments``                          adjustments
-       ``tf_to_active_inactive_conditions``     tf_to_active_inactive_conditions
+Parameters:
+- debug (bool): when True, prunes tf_to_active_inactive_conditions to a
+  single TF so step 4 only runs one condition-fit.
 
-WRITES ``transcription``                        process / transcription  (mutated)
-       ``translation``                          process / translation    (mutated)
-       ``tf_to_active_inactive_conditions``     tf_to_active_inactive_conditions
-                                                  (conditional — only when debug=True)
+Calculation:
+- adjust_translation_efficiencies: scalar multiplier per monomer id.
+- balance_translation_efficiencies: renormalize so mean(eff) == 1.
+- adjust_rna_expression: scalar multiplier per rna id, then renormalize
+  so sum(expression) == 1.
+- adjust_rna_deg_rates, adjust_protein_deg_rates: scalar multipliers.
+
+Outputs:
+- transcription (mutated): rna_expression + rna_deg_rates updated.
+- translation (mutated): translation_efficiencies_by_monomer updated.
+- tf_to_active_inactive_conditions (pruned when debug=True).
 """
 
 import time

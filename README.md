@@ -147,6 +147,22 @@ Imports: `v2parca.reconstruction.ecoli.knowledge_base_raw`,
 `v2parca.wholecell.utils`, `v2parca.ecoli.library.schema`, etc.  The substrate
 is not a separate installable package — it's part of v2parca.
 
+## Pre-computed output
+
+A gzipped pickle of the full ParCa output is shipped at
+[`data/parca_state.pkl.gz`](data/parca_state.pkl.gz) (19 MB compressed /
+142 MB raw) — debug-mode run with 7 conditions, produced by the
+71-minute full pipeline. Downstream repos can load it in one line and
+skip the ParCa run entirely:
+
+```python
+from v2parca.data_loader import load_parca_state
+state = load_parca_state()  # dict of 24 stores: process/*, mass, cell_specs, ...
+```
+
+See [`data/README.md`](data/README.md) for the full store layout,
+provenance, and regeneration instructions.
+
 ## Running from raw data
 
 v2parca is self-contained: the raw KB (`reconstruction/ecoli/flat/`) and all vEcoli
