@@ -130,12 +130,20 @@ def _safe_max_abs(a: np.ndarray, b: np.ndarray) -> float:
 # ---------------------------------------------------------------------------
 
 def _get(obj, attr):
-    """Attribute access that tolerates dicts, namespaces, and None."""
+    """Attribute access that tolerates dicts, namespaces, structured
+    arrays (which use ``__getitem__`` for field access), and None."""
     if obj is None:
         return None
     if isinstance(obj, dict):
         return obj.get(attr)
-    return getattr(obj, attr, None)
+    val = getattr(obj, attr, None)
+    if val is not None:
+        return val
+    # Structured-array / unum-struct-array field access.
+    try:
+        return obj[attr]
+    except (KeyError, IndexError, TypeError):
+        return None
 
 
 def _walk(obj, path=None):
@@ -522,6 +530,9 @@ def main():
                    help='pickle of composite.state from scripts/parca_bigraph.py')
     p.add_argument('--original-sim-data', type=str,
                    help='pickle of a fitted SimulationDataEcoli from vivarium-ecoli')
+    p.add_argument('--original-cell-specs', type=str,
+                   help='pickle of a cell_specs dict from vivarium-ecoli '
+                        '(--save-intermediates writes this separately)')
     p.add_argument('--vparca-runtimes', type=str,
                    help='JSON {step_N: seconds, …} for vParCa (optional)')
     p.add_argument('--original-runtimes', type=str,
@@ -548,6 +559,15 @@ def main():
 
     vparca_state = _load_pickle(args.vparca_state)
     original     = _load_pickle(args.original_sim_data)
+    # vivarium-ecoli's --save-intermediates splits sim_data and
+    # cell_specs into separate pickles.  Splice cell_specs onto the
+    # loaded sim_data so ``_reach(orig, ('cell_specs',))`` returns it.
+    if args.original_cell_specs:
+        cs = _load_pickle(args.original_cell_specs)
+        try:
+            original.cell_specs = cs
+        except Exception:
+            pass
     vparca       = _sim_data_like_from_vparca_state(vparca_state)
 
     vt = _load_json(args.vparca_runtimes)   if args.vparca_runtimes   else {}
