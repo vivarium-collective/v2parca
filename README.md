@@ -12,41 +12,70 @@ is no longer hidden inside `sim_data` — it's wired through the Composite.
 This is the ParCa analogue of [v2ecoli](https://github.com/eagmon/v2ecoli), which
 did the same decomposition for the simulation processes.
 
-## Pipeline overview
+## Architecture
+
+vParCa is a **port-first, nested-store** pipeline.  The composite's state
+is a bigraph tree that mirrors `SimulationDataEcoli`'s own structure —
+subsystem objects (`Transcription`, `Mass`, `Constants`, …) live at
+natural paths like `process/transcription` or `constants`, and pure-data
+top-level dicts (`conditions`, `tf_to_active_inactive_conditions`,
+`cell_specs`, …) live at sibling paths.  Each Step declares an explicit
+port manifest — one port per subsystem or leaf it touches — and the
+composite wires each port to its store path.  No `sim_data` or
+`cell_specs` blob travels.
+
+Pipeline overview:
 
 ```
-raw_data ─▶ [1 initialize]        ─▶ state_1
-state_1  ─▶ [2 input_adjustments] ─▶ state_2        (PURE — Extract / Compute / Merge)
-state_2  ─▶ [3 basal_specs]       ─▶ state_3 + named outs
-state_3  ─▶ [4 tf_condition_specs]─▶ state_4 + named outs
-state_4  ─▶ [5 fit_condition]     ─▶ state_5 + named outs
-state_5  ─▶ [6 promoter_binding]  ─▶ state_6 + named outs
-state_6  ─▶ [7 adjust_promoters]  ─▶ state_7 + named outs
-state_7  ─▶ [8 set_conditions]    ─▶ state_8        (PURE — Extract / Compute / Merge)
-state_8  ─▶ [9 final_adjustments] ─▶ state_9
+             raw_data (config)
+                  │
+                  ▼
+ ┌────────────────────────────────────────┐
+ │ Step 1  initialize + scatter           │
+ └────────────────────────────────────────┘
+       │   │   │   │   (18 subsystem + 9 top-level leaves, + tick_1)
+       ▼   ▼   ▼   ▼
+ ┌────────────────────────────────────────┐
+ │  nested bigraph store                  │
+ │    process/transcription               │
+ │    process/translation                 │
+ │    process/metabolism ...              │
+ │    mass / constants / ...              │
+ │    conditions / cell_specs / ...       │
+ └────────────────────────────────────────┘
+       ▲   ▲   ▲   ▲
+       │   │   │   │   (each Step wires port → store path)
+ ┌────────────────────────────────────────┐
+ │ Step 2  input_adjustments              │  tick_1 ──▶ tick_2
+ │ Step 3  basal_specs                    │  tick_2 ──▶ tick_3
+ │ Step 4  tf_condition_specs             │  tick_3 ──▶ tick_4
+ │ Step 5  fit_condition                  │  tick_4 ──▶ tick_5
+ │ Step 6  promoter_binding               │  tick_5 ──▶ tick_6
+ │ Step 7  adjust_promoters               │  tick_6 ──▶ tick_7
+ │ Step 8  set_conditions                 │  tick_7 ──▶ tick_8
+ │ Step 9  final_adjustments              │  tick_8 ──▶ tick_9
+ └────────────────────────────────────────┘
 ```
 
-Each stage module in `vparca/steps/` exposes three functions plus a Step class:
+Each Step is a thin `process_bigraph.Step` subclass in
+`vparca/steps/step_NN_*.py` with two module-level dicts — `INPUT_PORTS`
+and `OUTPUT_PORTS` — and an `update(state)` method that reads port values
+from `state`, calls the ParCa sub-functions through a `SimpleNamespace`
+facade built by `vparca/steps/_facade.make_sim_data_facade`, and returns
+a dict keyed by output-port name.  Subsystem objects carry their own
+mutations back out via their output ports.
 
-| function / class | role |
-| --- | --- |
-| `extract_input(sim_data, cell_specs, **kwargs) -> StageInput` | pull only the fields the stage reads |
-| `compute_*(inp: StageInput) -> StageOutput` | the core math — pure where possible |
-| `merge_output(sim_data, cell_specs, out: StageOutput)` | write back only the fields the stage produces |
-| `<Stage>Step(Step)` | the process-bigraph wrapper that runs in the Composite |
+**Tick ordering.** Because several Steps read and write overlapping
+subsystem objects, process-bigraph can't infer a total order from the
+data-level wires alone.  Opaque `tick_0..tick_9` leaves are wired as
+`tick_{N-1}` input → `tick_N` output per step, forcing a strict serial
+execution Step 1 → Step 9 as part of the Composite's initial DAG fire.
 
-The dataclasses in `vparca/types.py` make the real I/O of every stage explicit
-and inspectable without reading through 4400 lines of ParCa code.
-
-Purity legend (see `vparca/__init__.py` and `docs/DATA_FLOW.md`):
-
-- **PURE** — compute has no `sim_data` access; fully testable with synthetic data
-- **READ-ONLY** — compute reads `sim_data` via ref but does not mutate
-- **COUPLED** — compute still mutates `sim_data` via ref (future refactor target)
-
-Pure stages (2 and 8) are decomposed in the Composite into an
-`Extract → Compute → Merge` triplet so the Compute step has *only* explicit
-typed ports.
+**Bigraph-schema types** (`vparca/schema.py`) register Overwrite
+subclasses named `sim_data.transcription`, `sim_data.mass`, etc., so the
+port manifests document which kind of Python object lives at each
+subsystem leaf.  Today they're behaviorally identical to `overwrite`;
+future work can hook dispatch (serialize, diff) per type.
 
 ## Layout
 
@@ -56,21 +85,23 @@ Everything lives under a single Python namespace: `vparca`.
 vparca/
   __init__.py
   composite.py                   # build_parca_composite() / run_parca()
-  state.py                       # ParcaState bigraph-schema type
-  types.py                       # Input/Output dataclasses per stage
-  fitting.py                     # pure math + sim_data-reading helpers
-  promoter_fitting.py            # matrix builders + CVXPY for stages 6/7
-  trna_charging.py               # calculate_trna_charging + constants (for create_bulk_container)
+                                 # + STORE_PATH (port-name → nested-store path)
+  schema.py                      # bigraph-schema type registry (subsystem leaves)
+  fitting.py                     # sim_data-reading fitting helpers (pure math
+                                 #   + expressionConverge / Km / mass rescaling)
+  promoter_fitting.py            # matrix builders + CVXPY for steps 6/7
+  trna_charging.py               # calculate_trna_charging + constants
   steps/
     __init__.py                  # ALL_STEP_CLASSES registry
-    step_01_initialize.py
-    step_02_input_adjustments.py         (PURE — Extract/Compute/Merge)
+    _facade.py                   # make_sim_data_facade(ports) → SimpleNamespace
+    step_01_initialize.py        # scatter: sim_data.initialize → 18 subsystems
+    step_02_input_adjustments.py
     step_03_basal_specs.py
     step_04_tf_condition_specs.py
-    step_05_fit_condition.py               (READ-ONLY)
+    step_05_fit_condition.py
     step_06_promoter_binding.py
     step_07_adjust_promoters.py
-    step_08_set_conditions.py            (PURE — Extract/Compute/Merge)
+    step_08_set_conditions.py
     step_09_final_adjustments.py
 
   # Vendored vEcoli substrate — all under vparca/ so there's one namespace
@@ -86,9 +117,9 @@ vparca/
   ecoli/
     library/                     # schema.py + initial_conditions.py (only)
 
-tests/                           # test_parca_stage_02.py ... test_parca_stage_09.py
+tests/                           # test_ports_and_wiring.py  (fast static checks)
 scripts/                         # parca_bigraph.py, parca_workflow.py
-docs/                            # DATA_FLOW.md
+docs/                            # PORT_MAP.md, DATA_FLOW.md
 ```
 
 Imports: `vparca.reconstruction.ecoli.knowledge_base_raw`,
@@ -132,9 +163,17 @@ sim_data = run_parca(raw, cpus=4, debug=True)
 pytest tests/
 ```
 
-Each `tests/test_parca_stage_0N.py` exercises `extract_input`, `compute_*`, and
-`merge_output` for one stage with synthetic fixtures, so the pure slice of each
-stage is validated without requiring a full ParCa run.
+`tests/test_ports_and_wiring.py` (~16 tests, ~5s) validates the *static*
+port-first architecture without running the ParCa:
+
+- every port a Step declares is covered by `STORE_PATH`
+- Step 1 scatters every subsystem / leaf any downstream Step reads
+- tick chain `tick_0 → tick_1 → … → tick_9` is serial and complete
+- every `sim_data.*` schema type is registered
+- `build_parca_composite(...)` constructs without error
+
+These catch port-manifest drift immediately rather than surfacing as an
+`AttributeError` 30 minutes into a real pipeline run.
 
 ## Comparison with the original ParCa
 
