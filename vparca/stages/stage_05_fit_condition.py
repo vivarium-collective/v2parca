@@ -26,9 +26,9 @@ explicit data.
 from stochastic_arrow import StochasticSystem
 import numpy as np
 
-from ecoli.library.schema import bulk_name_to_idx, counts
-from wholecell.utils import units
-from wholecell.utils.fitting import normalize
+from vparca.ecoli.library.schema import bulk_name_to_idx, counts
+from vparca.wholecell.utils import units
+from vparca.wholecell.utils.fitting import normalize
 
 from vparca.fitting import (
     apply_updates,

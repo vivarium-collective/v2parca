@@ -71,13 +71,13 @@ from typing import Optional
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from configs import CONFIG_DIR_PATH
-from ecoli.experiments.ecoli_master_sim import SimConfig
-from reconstruction.ecoli.knowledge_base_raw import KnowledgeBaseEcoli
-from reconstruction.ecoli.fit_sim_data_1 import fitSimData_1
+from vparca.ecoli.experiments.ecoli_master_sim import SimConfig
+from vparca.reconstruction.ecoli.knowledge_base_raw import KnowledgeBaseEcoli
+from vparca.reconstruction.ecoli.fit_sim_data_1 import fitSimData_1
 from validation.ecoli.validation_data_raw import ValidationDataRawEcoli
 from validation.ecoli.validation_data import ValidationDataEcoli
-from wholecell.utils import constants
-import wholecell.utils.filepath as fp
+from vparca.wholecell.utils import constants
+import vparca.wholecell.utils.filepath as fp
 
 
 # Stage names in execution order

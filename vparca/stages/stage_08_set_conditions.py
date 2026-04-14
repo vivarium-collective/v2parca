@@ -15,7 +15,7 @@ The stage loops over all conditions in cell_specs and:
 
 import numpy as np
 
-from wholecell.utils import units
+from vparca.wholecell.utils import units
 
 from vparca.fitting import rescale_mass_for_soluble_metabolites
 from vparca.types import (

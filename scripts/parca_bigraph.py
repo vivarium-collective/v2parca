@@ -29,10 +29,10 @@ from pathlib import Path
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from reconstruction.ecoli.knowledge_base_raw import KnowledgeBaseEcoli
+from vparca.reconstruction.ecoli.knowledge_base_raw import KnowledgeBaseEcoli
 from vparca.composite import run_parca
-from wholecell.utils import constants
-import wholecell.utils.filepath as fp
+from vparca.wholecell.utils import constants
+import vparca.wholecell.utils.filepath as fp
 
 
 def main():

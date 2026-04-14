@@ -27,8 +27,8 @@ import pickle
 import numpy as np
 import scipy.optimize
 
-from ecoli.library.schema import bulk_name_to_idx, counts
-from wholecell.utils import units
+from vparca.ecoli.library.schema import bulk_name_to_idx, counts
+from vparca.wholecell.utils import units
 
 from vparca.fitting import (
     VERBOSE,

@@ -22,7 +22,7 @@ that are set during step 2.  merge_output only writes cell_specs.
 
 import numpy as np
 
-from wholecell.utils import parallelization
+from vparca.wholecell.utils import parallelization
 
 from vparca.fitting import (
     apply_updates,

@@ -20,7 +20,7 @@ deep process-object method calls.  There are no cell_specs writes.
 merge_output is a no-op.
 """
 
-from ecoli.library.initial_conditions import create_bulk_container
+from vparca.ecoli.library.initial_conditions import create_bulk_container
 
 from vparca.types import (
     FinalAdjustmentsInput,

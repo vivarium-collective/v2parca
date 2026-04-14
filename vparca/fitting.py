@@ -16,9 +16,9 @@ from typing import Callable
 
 import numpy as np
 
-from ecoli.library.schema import bulk_name_to_idx, counts
-from wholecell.utils import parallelization, units
-from wholecell.utils.fitting import masses_and_counts_for_homeostatic_target, normalize
+from vparca.ecoli.library.schema import bulk_name_to_idx, counts
+from vparca.wholecell.utils import parallelization, units
+from vparca.wholecell.utils.fitting import masses_and_counts_for_homeostatic_target, normalize
 
 
 def totalCountFromMassesAndRatios(totalMass, individualMasses, distribution):

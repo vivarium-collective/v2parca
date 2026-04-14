@@ -50,13 +50,17 @@ typed ports.
 
 ## Layout
 
+Everything lives under a single Python namespace: `vparca`.
+
 ```
-vparca/                          # migration code (process-bigraph Steps)
+vparca/
+  __init__.py
   composite.py                   # build_parca_composite() / run_parca()
   state.py                       # ParcaState bigraph-schema type
   types.py                       # Input/Output dataclasses per stage
   fitting.py                     # pure math + sim_data-reading helpers
   promoter_fitting.py            # matrix builders + CVXPY for stages 6/7
+  trna_charging.py               # calculate_trna_charging + constants (for create_bulk_container)
   stages/
     __init__.py                  # ALL_STEP_CLASSES registry
     stage_01_initialize.py
@@ -69,23 +73,27 @@ vparca/                          # migration code (process-bigraph Steps)
     stage_08_set_conditions.py            (PURE — Extract/Compute/Merge)
     stage_09_final_adjustments.py
 
-reconstruction/                  # vendored vEcoli substrate
+  # Vendored vEcoli substrate — all under vparca/ so there's one namespace
+  reconstruction/
+    spreadsheets.py
+    ecoli/
+      knowledge_base_raw.py      # KnowledgeBaseEcoli — loads flat/
+      simulation_data.py         # SimulationDataEcoli
+      dataclasses/               # sim_data subclasses
+      flat/                      # RAW DATA — KB TSVs + media/mass_fractions/etc.
+      scripts/update_biocyc_files.py
+  wholecell/                     # units, fitting, parallelization, …
   ecoli/
-    knowledge_base_raw.py        # KnowledgeBaseEcoli — loads flat/
-    simulation_data.py           # SimulationDataEcoli
-    dataclasses/                 # sim_data subclasses
-    flat/                        # RAW DATA — all KB TSVs + media/mass_fractions/etc.
-    scripts/update_biocyc_files.py
-  spreadsheets.py
-wholecell/                       # vendored — units, fitting, parallelization, etc.
-ecoli/                           # vendored (trimmed)
-  library/                       # schema + initial_conditions
-  processes/                     # only the 5 modules needed by initial_conditions
+    library/                     # schema.py + initial_conditions.py (only)
 
 tests/                           # test_parca_stage_02.py ... test_parca_stage_09.py
 scripts/                         # parca_bigraph.py, parca_workflow.py
 docs/                            # DATA_FLOW.md
 ```
+
+Imports: `vparca.reconstruction.ecoli.knowledge_base_raw`,
+`vparca.wholecell.utils`, `vparca.ecoli.library.schema`, etc.  The substrate
+is not a separate installable package — it's part of vParCa.
 
 ## Running from raw data
 
@@ -106,7 +114,7 @@ python scripts/parca_workflow.py --mode fast --cpus 4
 Programmatic entry point:
 
 ```python
-from reconstruction.ecoli.knowledge_base_raw import KnowledgeBaseEcoli
+from vparca.reconstruction.ecoli.knowledge_base_raw import KnowledgeBaseEcoli
 from vparca.composite import run_parca
 
 raw = KnowledgeBaseEcoli(

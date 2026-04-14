@@ -38,7 +38,7 @@ class TestImports:
         assert callable(merge_output)
 
     def test_import_create_bulk_container(self):
-        from ecoli.library.initial_conditions import create_bulk_container
+        from vparca.ecoli.library.initial_conditions import create_bulk_container
 
         assert callable(create_bulk_container)
 
@@ -138,6 +138,6 @@ class TestFinalAdjustmentsSmokeTest:
 
     def test_fit_sim_data_wiring(self):
         """Verify fit_sim_data_1.py imports stage 9 correctly."""
-        from reconstruction.ecoli.fit_sim_data_1 import final_adjustments
+        from vparca.reconstruction.ecoli.fit_sim_data_1 import final_adjustments
 
         assert callable(final_adjustments)

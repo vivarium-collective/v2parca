@@ -31,7 +31,10 @@ test = ["pytest"]
 compare = ["vivarium-core"]
 
 [tool.setuptools.packages.find]
-include = ["vparca*", "reconstruction*", "wholecell*", "ecoli*"]
+include = ["vparca*"]
+
+[tool.setuptools.package-data]
+"vparca.reconstruction.ecoli" = ["flat/**/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

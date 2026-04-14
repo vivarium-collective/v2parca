@@ -20,8 +20,8 @@ from cvxpy import Variable, Problem, Minimize, norm
 import numpy as np
 import scipy.sparse
 
-from ecoli.library.schema import bulk_name_to_idx, counts
-from wholecell.utils import units
+from vparca.ecoli.library.schema import bulk_name_to_idx, counts
+from vparca.wholecell.utils import units
 
 # Parameters used in fitPromoterBoundProbability()
 PROMOTER_PDIFF_THRESHOLD = 0.06  # Minimum difference between binding probabilities

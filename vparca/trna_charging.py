@@ -21,7 +21,7 @@ import numpy.typing as npt
 from scipy.integrate import solve_ivp
 from unum import Unum
 
-from wholecell.utils import units
+from vparca.wholecell.utils import units
 
 
 MICROMOLAR_UNITS = units.umol / units.L
