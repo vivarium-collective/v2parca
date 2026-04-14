@@ -188,7 +188,26 @@ CELL_SPECS_FIELDS = [
 
 
 def _reach(obj, path: Tuple[str, ...]):
-    """Apply path sequentially; tolerates dict or attr access."""
+    """Apply path sequentially; tolerates dict or attr access.
+
+    vParCa's composite.state is a **flat** dict keyed by port name
+    (``'transcription'``, ``'mass'``, …) with subsystem objects at the
+    leaves.  vEcoli's sim_data is a ``SimulationDataEcoli`` instance with
+    subsystems at ``sim_data.process.transcription``.  To unify the two
+    we map ``('process', 'transcription', *rest)`` to ``[transcription, *rest]``
+    when the object looks flat (dict with subsystem keys at top level)."""
+    if obj is None:
+        return None
+    # Detect flat vParCa state: top-level dict with 'transcription' /
+    # 'mass' keys rather than a 'process' key.
+    if isinstance(obj, dict) and 'transcription' in obj and 'process' not in obj:
+        if path and path[0] == 'process' and len(path) > 1:
+            path = path[1:]
+        if path and path[0] == 'internal_state' and len(path) > 1:
+            # vEcoli: sim_data.internal_state.bulk_molecules
+            # vParCa: state['bulk_molecules']
+            if path[1] == 'bulk_molecules':
+                path = ('bulk_molecules',) + tuple(path[2:])
     for p in path:
         if obj is None:
             return None
@@ -197,14 +216,8 @@ def _reach(obj, path: Tuple[str, ...]):
 
 
 def _sim_data_like_from_vparca_state(state: Dict[str, Any]) -> Any:
-    """Wrap a vParCa composite.state into a sim_data-shaped namespace so
-    ``_reach(path)`` works uniformly for both engines.
-
-    The vParCa state already stores each sim_data subsystem as a live
-    object at its canonical path (``state['process']['transcription']``,
-    ``state['mass']``, …); we just hand it back as-is since it's
-    dict-shaped matching sim_data's nested-attribute layout.
-    """
+    """Hand back the vParCa state as-is.  ``_reach`` handles the shape
+    difference against a vEcoli ``SimulationDataEcoli`` instance."""
     return state
 
 
@@ -464,7 +477,35 @@ def build_report(vparca, original, vparca_times, original_times,
 # CLI
 # ---------------------------------------------------------------------------
 
+def _alias_vivarium_ecoli_modules():
+    """Make vivarium-ecoli pickles load inside the vParCa interpreter.
+
+    vEcoli's pickles reference top-level paths like ``reconstruction.ecoli
+    .simulation_data.SimulationDataEcoli``, which don't exist in vParCa
+    (they're under ``vparca.reconstruction.ecoli.*``).  Import the vendored
+    tree, then alias every loaded submodule to its top-level name."""
+    import sys, importlib
+    # Pre-load the substrate the pickle will need.
+    for modpath in (
+        'vparca.reconstruction.ecoli.simulation_data',
+        'vparca.reconstruction.ecoli.dataclasses',
+        'vparca.wholecell.utils.units',
+        'vparca.ecoli.library.schema',
+    ):
+        try:
+            importlib.import_module(modpath)
+        except Exception:
+            pass
+    # Register aliases.
+    for name, mod in list(sys.modules.items()):
+        for top in ('vparca.reconstruction', 'vparca.wholecell', 'vparca.ecoli'):
+            if name == top or name.startswith(top + '.'):
+                alias = name[len('vparca.'):]
+                sys.modules.setdefault(alias, mod)
+
+
 def _load_pickle(path: str) -> Any:
+    _alias_vivarium_ecoli_modules()
     with open(path, 'rb') as f:
         return pickle.load(f)
 
