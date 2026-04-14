@@ -27,7 +27,7 @@ class TestImports:
     """Verify all stage 9 modules can be imported."""
 
     def test_import_stage_module(self):
-        from vparca.stages.stage_09_final_adjustments import (
+        from vparca.steps.step_09_final_adjustments import (
             extract_input,
             compute_final_adjustments,
             merge_output,
@@ -89,7 +89,7 @@ class TestFinalAdjustmentsSmokeTest:
 
     def test_extract_input(self, sim_data_before, cell_specs_before):
         """Verify extract_input runs without error on real data."""
-        from vparca.stages.stage_09_final_adjustments import (
+        from vparca.steps.step_09_final_adjustments import (
             extract_input,
         )
 
@@ -123,7 +123,7 @@ class TestFinalAdjustmentsSmokeTest:
 
     def test_merge_output_is_noop(self, sim_data_before, cell_specs_before):
         """Verify merge_output does nothing."""
-        from vparca.stages.stage_09_final_adjustments import merge_output
+        from vparca.steps.step_09_final_adjustments import merge_output
         from vparca.types import FinalAdjustmentsOutput
 
         out = FinalAdjustmentsOutput()

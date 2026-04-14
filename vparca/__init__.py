@@ -10,17 +10,17 @@ Layout
         types.py              Input/Output dataclasses for every stage
         fitting.py            pure math + sim_data-reading fitting helpers
         promoter_fitting.py   matrix builders + CVXPY optimization (stages 6/7)
-        stages/
+        steps/
             __init__.py       ALL_STEP_CLASSES registry
-            stage_01_initialize.py
-            stage_02_input_adjustments.py      (Extract → Compute → Merge, PURE)
-            stage_03_basal_specs.py            (COUPLED)
-            stage_04_tf_condition_specs.py     (COUPLED)
-            stage_05_fit_condition.py          (READ-ONLY)
-            stage_06_promoter_binding.py       (COUPLED)
-            stage_07_adjust_promoters.py       (COUPLED)
-            stage_08_set_conditions.py         (Extract → Compute → Merge, PURE)
-            stage_09_final_adjustments.py      (COUPLED)
+            step_01_initialize.py
+            step_02_input_adjustments.py      (Extract → Compute → Merge, PURE)
+            step_03_basal_specs.py            (COUPLED)
+            step_04_tf_condition_specs.py     (COUPLED)
+            step_05_fit_condition.py          (READ-ONLY)
+            step_06_promoter_binding.py       (COUPLED)
+            step_07_adjust_promoters.py       (COUPLED)
+            step_08_set_conditions.py         (Extract → Compute → Merge, PURE)
+            step_09_final_adjustments.py      (COUPLED)
 
 Each stage module (2–9) provides:
 

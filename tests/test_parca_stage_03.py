@@ -27,7 +27,7 @@ class TestImports:
     """Verify all stage 3 modules can be imported."""
 
     def test_import_stage_module(self):
-        from vparca.stages.stage_03_basal_specs import (
+        from vparca.steps.step_03_basal_specs import (
             extract_input,
             compute_basal_specs,
             merge_output,
@@ -38,7 +38,7 @@ class TestImports:
         assert callable(merge_output)
 
     def test_import_sub_functions(self):
-        from vparca.stages.stage_03_basal_specs import (
+        from vparca.steps.step_03_basal_specs import (
             setKmCooperativeEndoRNonLinearRNAdecay,
             fitMaintenanceCosts,
         )
@@ -121,7 +121,7 @@ class TestBasalSpecsSmokeTest:
 
     def test_extract_input(self, sim_data_before):
         """Verify extract_input runs without error on real data."""
-        from vparca.stages.stage_03_basal_specs import extract_input
+        from vparca.steps.step_03_basal_specs import extract_input
 
         inp = extract_input(sim_data_before, {}, cache_dir="/tmp")
 
@@ -134,7 +134,7 @@ class TestBasalSpecsSmokeTest:
 
     def test_extract_input_with_kwargs(self, sim_data_before):
         """Verify kwargs are captured."""
-        from vparca.stages.stage_03_basal_specs import extract_input
+        from vparca.steps.step_03_basal_specs import extract_input
 
         inp = extract_input(
             sim_data_before,

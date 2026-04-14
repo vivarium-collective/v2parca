@@ -36,7 +36,7 @@ from process_bigraph import Composite, allocate_core
 
 from vparca.reconstruction.ecoli.simulation_data import SimulationDataEcoli
 from vparca.state import ParcaState, register_parca_types
-from vparca.stages import ALL_STEP_CLASSES
+from vparca.steps import ALL_STEP_CLASSES
 
 
 def register_parca_steps(core):
@@ -143,7 +143,7 @@ def build_parca_composite(raw_data, core=None, **kwargs):
             # ---- Stage 2: Extract → Pure InputAdj → Merge ----
             'extract_02': {
                 '_type': 'step',
-                'address': 'local:ExtractForStage2Step',
+                'address': 'local:ExtractForStep2Step',
                 'config': {
                     'debug': debug,
                 },
@@ -165,7 +165,7 @@ def build_parca_composite(raw_data, core=None, **kwargs):
 
             'merge_02': {
                 '_type': 'step',
-                'address': 'local:MergeAfterStage2Step',
+                'address': 'local:MergeAfterStep2Step',
                 'config': {},
                 'inputs': {
                     'state': ['state_1'],
@@ -273,7 +273,7 @@ def build_parca_composite(raw_data, core=None, **kwargs):
             # ---- Stage 8: Extract → Pure SetConditions → Merge ----
             'extract_08': {
                 '_type': 'step',
-                'address': 'local:ExtractForStage8Step',
+                'address': 'local:ExtractForStep8Step',
                 'config': {},
                 'inputs': {
                     'state': ['state_7'],
@@ -291,7 +291,7 @@ def build_parca_composite(raw_data, core=None, **kwargs):
 
             'merge_08': {
                 '_type': 'step',
-                'address': 'local:MergeAfterStage8Step',
+                'address': 'local:MergeAfterStep8Step',
                 'config': {},
                 'inputs': {
                     'state': ['state_7'],

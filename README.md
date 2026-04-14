@@ -26,7 +26,7 @@ state_7  ─▶ [8 set_conditions]    ─▶ state_8        (PURE — Extract / 
 state_8  ─▶ [9 final_adjustments] ─▶ state_9
 ```
 
-Each stage module in `vparca/stages/` exposes three functions plus a Step class:
+Each stage module in `vparca/steps/` exposes three functions plus a Step class:
 
 | function / class | role |
 | --- | --- |
@@ -61,17 +61,17 @@ vparca/
   fitting.py                     # pure math + sim_data-reading helpers
   promoter_fitting.py            # matrix builders + CVXPY for stages 6/7
   trna_charging.py               # calculate_trna_charging + constants (for create_bulk_container)
-  stages/
+  steps/
     __init__.py                  # ALL_STEP_CLASSES registry
-    stage_01_initialize.py
-    stage_02_input_adjustments.py         (PURE — Extract/Compute/Merge)
-    stage_03_basal_specs.py
-    stage_04_tf_condition_specs.py
-    stage_05_fit_condition.py               (READ-ONLY)
-    stage_06_promoter_binding.py
-    stage_07_adjust_promoters.py
-    stage_08_set_conditions.py            (PURE — Extract/Compute/Merge)
-    stage_09_final_adjustments.py
+    step_01_initialize.py
+    step_02_input_adjustments.py         (PURE — Extract/Compute/Merge)
+    step_03_basal_specs.py
+    step_04_tf_condition_specs.py
+    step_05_fit_condition.py               (READ-ONLY)
+    step_06_promoter_binding.py
+    step_07_adjust_promoters.py
+    step_08_set_conditions.py            (PURE — Extract/Compute/Merge)
+    step_09_final_adjustments.py
 
   # Vendored vEcoli substrate — all under vparca/ so there's one namespace
   reconstruction/

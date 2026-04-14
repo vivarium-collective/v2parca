@@ -56,7 +56,7 @@ def sim_data_after():
 @pytest.fixture(scope="module")
 def pure_output(sim_data_before, cell_specs_before):
     """Run the pure compute pipeline and return the output."""
-    from vparca.stages.stage_02_input_adjustments import (
+    from vparca.steps.step_02_input_adjustments import (
         extract_input,
         compute_input_adjustments,
     )
@@ -120,7 +120,7 @@ class TestInputAdjustmentsRoundtrip:
         """The full extract/compute/merge cycle must match the legacy output."""
         import copy
 
-        from vparca.stages.stage_02_input_adjustments import (
+        from vparca.steps.step_02_input_adjustments import (
             extract_input,
             compute_input_adjustments,
             merge_output,
@@ -166,7 +166,7 @@ class TestSubFunctions:
     """Unit tests for individual pure sub-functions."""
 
     def test_adjust_translation_efficiencies(self):
-        from vparca.stages.stage_02_input_adjustments import (
+        from vparca.steps.step_02_input_adjustments import (
             adjust_translation_efficiencies,
         )
 
@@ -179,7 +179,7 @@ class TestSubFunctions:
         np.testing.assert_array_equal(eff, [1.0, 2.0, 3.0])
 
     def test_balance_translation_efficiencies(self):
-        from vparca.stages.stage_02_input_adjustments import (
+        from vparca.steps.step_02_input_adjustments import (
             balance_translation_efficiencies,
         )
 
@@ -190,7 +190,7 @@ class TestSubFunctions:
         np.testing.assert_array_equal(result, [3.0, 3.0, 3.0, 7.0])
 
     def test_adjust_protein_deg_rates(self):
-        from vparca.stages.stage_02_input_adjustments import (
+        from vparca.steps.step_02_input_adjustments import (
             adjust_protein_deg_rates,
         )
 

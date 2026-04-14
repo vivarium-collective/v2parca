@@ -29,7 +29,7 @@ class TestComputeSynthProbFractions:
     """Unit tests for the compute_synth_prob_fractions sub-function."""
 
     def test_basic(self):
-        from vparca.stages.stage_08_set_conditions import (
+        from vparca.steps.step_08_set_conditions import (
             compute_synth_prob_fractions,
         )
 
@@ -45,7 +45,7 @@ class TestComputeSynthProbFractions:
         assert result == {"mRna": pytest.approx(0.3), "tRna": pytest.approx(0.35), "rRna": pytest.approx(0.35)}
 
     def test_empty_category(self):
-        from vparca.stages.stage_08_set_conditions import (
+        from vparca.steps.step_08_set_conditions import (
             compute_synth_prob_fractions,
         )
 
@@ -155,7 +155,7 @@ class TestSetConditionsSmokeTest:
 
     def test_extract_input(self, sim_data_tf, cell_specs_tf):
         """Verify extract_input runs without error on real data."""
-        from vparca.stages.stage_08_set_conditions import extract_input
+        from vparca.steps.step_08_set_conditions import extract_input
 
         inp = extract_input(sim_data_tf, cell_specs_tf)
 
@@ -182,7 +182,7 @@ class TestSetConditionsSmokeTest:
         """
         import copy
 
-        from vparca.stages.stage_08_set_conditions import (
+        from vparca.steps.step_08_set_conditions import (
             extract_input,
             compute_set_conditions,
             merge_output,
@@ -252,7 +252,7 @@ class TestSetConditionsRegression:
         """The full extract/compute/merge cycle must match the legacy output."""
         import copy
 
-        from vparca.stages.stage_08_set_conditions import (
+        from vparca.steps.step_08_set_conditions import (
             extract_input,
             compute_set_conditions,
             merge_output,

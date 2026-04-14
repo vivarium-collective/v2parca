@@ -27,7 +27,7 @@ class TestImports:
     """Verify all stage 6 modules can be imported."""
 
     def test_import_stage_module(self):
-        from vparca.stages.stage_06_promoter_binding import (
+        from vparca.steps.step_06_promoter_binding import (
             extract_input,
             compute_promoter_binding,
             merge_output,
@@ -117,7 +117,7 @@ class TestPromoterBindingSmokeTest:
 
     def test_extract_input(self, sim_data_before, cell_specs_before):
         """Verify extract_input runs without error on real data."""
-        from vparca.stages.stage_06_promoter_binding import (
+        from vparca.steps.step_06_promoter_binding import (
             extract_input,
         )
 
@@ -245,7 +245,7 @@ class TestPromoterBindingRegression:
 
     def test_merge_output_roundtrip(self, sim_data_before, cell_specs_after):
         """Verify merge_output produces the expected cell_specs structure."""
-        from vparca.stages.stage_06_promoter_binding import merge_output
+        from vparca.steps.step_06_promoter_binding import merge_output
         from vparca.types import PromoterBindingOutput
 
         r_vector = cell_specs_after["basal"]["r_vector"]

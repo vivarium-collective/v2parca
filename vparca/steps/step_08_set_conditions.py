@@ -269,7 +269,7 @@ def compute_set_conditions(inp: SetConditionsInput) -> SetConditionsOutput:
 # ---------------------------------------------------------------------------
 
 # Port schema shared by Extract (outputs) and SetConditionsStep (inputs)
-_STAGE_08_INPUT_PORTS = {
+_STEP_08_INPUT_PORTS = {
     'conditions': 'overwrite',
     'is_mRNA': 'overwrite',
     'is_tRNA': 'overwrite',
@@ -279,7 +279,7 @@ _STAGE_08_INPUT_PORTS = {
 }
 
 # Port schema shared by SetConditionsStep (outputs) and Merge (inputs)
-_STAGE_08_OUTPUT_PORTS = {
+_STEP_08_OUTPUT_PORTS = {
     'rnaSynthProbFraction': 'overwrite',
     'rnapFractionActiveDict': 'overwrite',
     'rnaSynthProbRProtein': 'overwrite',
@@ -292,14 +292,14 @@ _STAGE_08_OUTPUT_PORTS = {
 }
 
 
-class ExtractForStage8Step(Step):
+class ExtractForStep8Step(Step):
     """Helper: extract fields from parca_state for the pure Stage 8 step."""
 
     def inputs(self):
         return {'state': 'parca_state'}
 
     def outputs(self):
-        return dict(_STAGE_08_INPUT_PORTS)
+        return dict(_STEP_08_INPUT_PORTS)
 
     def update(self, state):
         parca_state = state['state']
@@ -318,7 +318,7 @@ class SetConditionsStep(Step):
     """Stage 8: PURE — every field is an explicit typed port.
 
     No parca_state in inputs or outputs.  Operates entirely on
-    individually-named data ports extracted by ExtractForStage8Step.
+    individually-named data ports extracted by ExtractForStep8Step.
     """
 
     config_schema = {
@@ -326,10 +326,10 @@ class SetConditionsStep(Step):
     }
 
     def inputs(self):
-        return dict(_STAGE_08_INPUT_PORTS)
+        return dict(_STEP_08_INPUT_PORTS)
 
     def outputs(self):
-        return dict(_STAGE_08_OUTPUT_PORTS)
+        return dict(_STEP_08_OUTPUT_PORTS)
 
     def update(self, state):
         t0 = time.time()
@@ -357,13 +357,13 @@ class SetConditionsStep(Step):
         }
 
 
-class MergeAfterStage8Step(Step):
+class MergeAfterStep8Step(Step):
     """Helper: merge Stage 8 outputs back into parca_state."""
 
     def inputs(self):
         return {
             'state': 'parca_state',
-            **_STAGE_08_OUTPUT_PORTS,
+            **_STEP_08_OUTPUT_PORTS,
         }
 
     def outputs(self):

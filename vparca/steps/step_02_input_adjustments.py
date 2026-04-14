@@ -338,7 +338,7 @@ def compute_input_adjustments(inp: InputAdjustmentsInput) -> InputAdjustmentsOut
 # ---------------------------------------------------------------------------
 
 # Port schema shared by Extract (outputs) and InputAdjustmentsStep (inputs)
-_STAGE_02_INPUT_PORTS = {
+_STEP_02_INPUT_PORTS = {
     'monomer_ids': 'overwrite',
     'translation_efficiencies': 'overwrite',
     'translation_eff_adjustments': 'overwrite',
@@ -357,7 +357,7 @@ _STAGE_02_INPUT_PORTS = {
 }
 
 # Port schema shared by InputAdjustmentsStep (outputs) and Merge (inputs)
-_STAGE_02_OUTPUT_PORTS = {
+_STEP_02_OUTPUT_PORTS = {
     'translation_efficiencies': 'overwrite',
     'basal_rna_expression': 'overwrite',
     'rna_deg_rates': 'overwrite',
@@ -367,7 +367,7 @@ _STAGE_02_OUTPUT_PORTS = {
 }
 
 
-class ExtractForStage2Step(Step):
+class ExtractForStep2Step(Step):
     """Helper: extract fields from parca_state for the pure Stage 2 step."""
 
     config_schema = {
@@ -378,7 +378,7 @@ class ExtractForStage2Step(Step):
         return {'state': 'parca_state'}
 
     def outputs(self):
-        return dict(_STAGE_02_INPUT_PORTS)
+        return dict(_STEP_02_INPUT_PORTS)
 
     def update(self, state):
         parca_state = state['state']
@@ -407,7 +407,7 @@ class InputAdjustmentsStep(Step):
     """Stage 2: PURE — every field is an explicit typed port.
 
     No parca_state in inputs or outputs.  Operates entirely on
-    individually-named data ports extracted by ExtractForStage2Step.
+    individually-named data ports extracted by ExtractForStep2Step.
     """
 
     config_schema = {
@@ -415,10 +415,10 @@ class InputAdjustmentsStep(Step):
     }
 
     def inputs(self):
-        return dict(_STAGE_02_INPUT_PORTS)
+        return dict(_STEP_02_INPUT_PORTS)
 
     def outputs(self):
-        return dict(_STAGE_02_OUTPUT_PORTS)
+        return dict(_STEP_02_OUTPUT_PORTS)
 
     def update(self, state):
         t0 = time.time()
@@ -452,13 +452,13 @@ class InputAdjustmentsStep(Step):
         }
 
 
-class MergeAfterStage2Step(Step):
+class MergeAfterStep2Step(Step):
     """Helper: merge Stage 2 outputs back into parca_state."""
 
     def inputs(self):
         return {
             'state': 'parca_state',
-            **_STAGE_02_OUTPUT_PORTS,
+            **_STEP_02_OUTPUT_PORTS,
         }
 
     def outputs(self):

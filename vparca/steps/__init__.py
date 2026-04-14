@@ -11,38 +11,38 @@ has only explicit typed ports.
 ``process_bigraph.allocate_core(top=...)``.
 """
 
-from vparca.stages.stage_01_initialize import InitializeStep
-from vparca.stages.stage_02_input_adjustments import (
-    ExtractForStage2Step,
+from vparca.steps.step_01_initialize import InitializeStep
+from vparca.steps.step_02_input_adjustments import (
+    ExtractForStep2Step,
     InputAdjustmentsStep,
-    MergeAfterStage2Step,
+    MergeAfterStep2Step,
 )
-from vparca.stages.stage_03_basal_specs import BasalSpecsStep
-from vparca.stages.stage_04_tf_condition_specs import TfConditionSpecsStep
-from vparca.stages.stage_05_fit_condition import FitConditionStep
-from vparca.stages.stage_06_promoter_binding import PromoterBindingStep
-from vparca.stages.stage_07_adjust_promoters import AdjustPromotersStep
-from vparca.stages.stage_08_set_conditions import (
-    ExtractForStage8Step,
+from vparca.steps.step_03_basal_specs import BasalSpecsStep
+from vparca.steps.step_04_tf_condition_specs import TfConditionSpecsStep
+from vparca.steps.step_05_fit_condition import FitConditionStep
+from vparca.steps.step_06_promoter_binding import PromoterBindingStep
+from vparca.steps.step_07_adjust_promoters import AdjustPromotersStep
+from vparca.steps.step_08_set_conditions import (
+    ExtractForStep8Step,
     SetConditionsStep,
-    MergeAfterStage8Step,
+    MergeAfterStep8Step,
 )
-from vparca.stages.stage_09_final_adjustments import FinalAdjustmentsStep
+from vparca.steps.step_09_final_adjustments import FinalAdjustmentsStep
 
 
 ALL_STEP_CLASSES = {
     'InitializeStep': InitializeStep,
-    'ExtractForStage2Step': ExtractForStage2Step,
+    'ExtractForStep2Step': ExtractForStep2Step,
     'InputAdjustmentsStep': InputAdjustmentsStep,
-    'MergeAfterStage2Step': MergeAfterStage2Step,
+    'MergeAfterStep2Step': MergeAfterStep2Step,
     'BasalSpecsStep': BasalSpecsStep,
     'TfConditionSpecsStep': TfConditionSpecsStep,
     'FitConditionStep': FitConditionStep,
     'PromoterBindingStep': PromoterBindingStep,
     'AdjustPromotersStep': AdjustPromotersStep,
-    'ExtractForStage8Step': ExtractForStage8Step,
+    'ExtractForStep8Step': ExtractForStep8Step,
     'SetConditionsStep': SetConditionsStep,
-    'MergeAfterStage8Step': MergeAfterStage8Step,
+    'MergeAfterStep8Step': MergeAfterStep8Step,
     'FinalAdjustmentsStep': FinalAdjustmentsStep,
 }
 
@@ -50,16 +50,16 @@ ALL_STEP_CLASSES = {
 __all__ = [
     'ALL_STEP_CLASSES',
     'InitializeStep',
-    'ExtractForStage2Step',
+    'ExtractForStep2Step',
     'InputAdjustmentsStep',
-    'MergeAfterStage2Step',
+    'MergeAfterStep2Step',
     'BasalSpecsStep',
     'TfConditionSpecsStep',
     'FitConditionStep',
     'PromoterBindingStep',
     'AdjustPromotersStep',
-    'ExtractForStage8Step',
+    'ExtractForStep8Step',
     'SetConditionsStep',
-    'MergeAfterStage8Step',
+    'MergeAfterStep8Step',
     'FinalAdjustmentsStep',
 ]
