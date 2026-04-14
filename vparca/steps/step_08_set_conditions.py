@@ -1,162 +1,44 @@
 """
-Stage 8: set_conditions — Rescale mass for soluble metabolites and populate
-condition-specific dictionaries on sim_data.
+Step 8 — set_conditions.  Rescale mass for soluble metabolites per
+condition and populate per-nutrient dictionaries on transcription /
+translation / the top-level expected_dry_mass_increase_dict.
 
-Three public functions:
-    extract_input(sim_data, cell_specs, **kwargs) -> SetConditionsInput
-    compute_set_conditions(inp) -> SetConditionsOutput
-    merge_output(sim_data, cell_specs, out)
+Port surface mirrors the subsystems accessed + the data leaves mutated.
+Previously split into Extract / PureCompute / Merge triplet; unified here
+now that the facade handles the sim_data-shape bridging.
 
-The stage loops over all conditions in cell_specs and:
-1. Computes concentration-based mass rescaling for each condition
-2. Populates per-nutrient dictionaries for synth prob fractions,
-   elongation rates, and active fractions
+Store paths wired by the composite
+----------------------------------
+
+READS (subsystems):
+  transcription, translation, metabolism, mass, constants,
+  growth_rate_parameters, getter
+READS (data leaves):
+  conditions, condition_to_doubling_time, cell_specs
+
+WRITES:
+  transcription, translation (per-nutrient dicts populated),
+  cell_specs (updated avgCellDryMassInit + fitAvgSolublePoolMass + bulkContainer),
+  expected_dry_mass_increase_dict
 """
+
+import time
 
 import numpy as np
 
-from vparca.wholecell.utils import units
-
-from vparca.fitting import rescale_mass_for_soluble_metabolites
-from vparca.types import (
-    SetConditionsConditionInput,
-    SetConditionsConditionOutput,
-    SetConditionsInput,
-    SetConditionsOutput,
-)
-
-
-import time
 from process_bigraph import Step
 
-from vparca.state import ParcaState
-
-# ============================================================================
-# Extract / Merge
-# ============================================================================
-
-
-def extract_input(sim_data, cell_specs, **kwargs) -> SetConditionsInput:
-    """Pull all data needed for set_conditions from sim_data and cell_specs."""
-    transcription = sim_data.process.transcription
-    rna_data = transcription.rna_data
-
-    molar_units = units.mol / units.L
-
-    condition_inputs = []
-    for condition_label in sorted(cell_specs):
-        condition = sim_data.conditions[condition_label]
-        nutrients = condition["nutrients"]
-        doubling_time = sim_data.condition_to_doubling_time[condition_label]
-        spec = cell_specs[condition_label]
-
-        # Pre-compute concentration dict
-        conc_dict = sim_data.process.metabolism.concentration_updates.concentrations_based_on_nutrients(
-            media_id=nutrients
-        )
-        conc_dict.update(
-            sim_data.mass.getBiomassAsConcentrations(doubling_time)
-        )
-
-        target_molecule_ids = sorted(conc_dict)
-        target_molecule_concentrations = molar_units * np.array(
-            [conc_dict[key].asNumber(molar_units) for key in target_molecule_ids]
-        )
-        molecular_weights = sim_data.getter.get_masses(target_molecule_ids)
-
-        # Pre-compute mass data for rescaleMassForSolubleMetabolites
-        avg_cell_fraction_mass = sim_data.mass.get_component_masses(doubling_time)
-        non_small_molecule_initial_cell_mass = (
-            avg_cell_fraction_mass["proteinMass"]
-            + avg_cell_fraction_mass["rnaMass"]
-            + avg_cell_fraction_mass["dnaMass"]
-        ) / sim_data.mass.avg_cell_to_initial_cell_conversion_factor
-
-        # Pre-compute growth rate parameters
-        grp = sim_data.growth_rate_parameters
-        fraction_active_rnap = grp.get_fraction_active_rnap(doubling_time)
-        rnap_elongation_rate = grp.get_rnap_elongation_rate(doubling_time)
-        ribosome_elongation_rate = grp.get_ribosome_elongation_rate(doubling_time)
-        fraction_active_ribosome = grp.get_fraction_active_ribosome(doubling_time)
-
-        condition_inputs.append(
-            SetConditionsConditionInput(
-                condition_label=condition_label,
-                nutrients=nutrients,
-                has_perturbations=len(condition["perturbations"]) > 0,
-                doubling_time=doubling_time,
-                target_molecule_ids=target_molecule_ids,
-                target_molecule_concentrations=target_molecule_concentrations,
-                molecular_weights=molecular_weights,
-                non_small_molecule_initial_cell_mass=non_small_molecule_initial_cell_mass,
-                avg_cell_to_initial_cell_conversion_factor=sim_data.mass.avg_cell_to_initial_cell_conversion_factor,
-                cell_density=sim_data.constants.cell_density,
-                n_avogadro=sim_data.constants.n_avogadro,
-                bulk_container=spec["bulkContainer"].copy(),
-                avg_cell_dry_mass_init_old=spec["avgCellDryMassInit"],
-                rna_synth_prob=transcription.rna_synth_prob[condition_label].copy(),
-                fraction_active_rnap=fraction_active_rnap,
-                rnap_elongation_rate=rnap_elongation_rate,
-                ribosome_elongation_rate=ribosome_elongation_rate,
-                fraction_active_ribosome=fraction_active_ribosome,
-            )
-        )
-
-    return SetConditionsInput(
-        conditions=condition_inputs,
-        is_mRNA=rna_data["is_mRNA"],
-        is_tRNA=rna_data["is_tRNA"],
-        is_rRNA=rna_data["is_rRNA"],
-        includes_ribosomal_protein=rna_data["includes_ribosomal_protein"],
-        includes_RNAP=rna_data["includes_RNAP"],
-        verbose=1,
-    )
-
-
-def merge_output(sim_data, cell_specs, out: SetConditionsOutput):
-    """Write computed results back into sim_data and cell_specs."""
-    sim_data.process.transcription.rnaSynthProbFraction = out.rnaSynthProbFraction
-    sim_data.process.transcription.rnapFractionActiveDict = out.rnapFractionActiveDict
-    sim_data.process.transcription.rnaSynthProbRProtein = out.rnaSynthProbRProtein
-    sim_data.process.transcription.rnaSynthProbRnaPolymerase = (
-        out.rnaSynthProbRnaPolymerase
-    )
-    sim_data.process.transcription.rnaPolymeraseElongationRateDict = (
-        out.rnaPolymeraseElongationRateDict
-    )
-    sim_data.expectedDryMassIncreaseDict = out.expectedDryMassIncreaseDict
-    sim_data.process.translation.ribosomeElongationRateDict = (
-        out.ribosomeElongationRateDict
-    )
-    sim_data.process.translation.ribosomeFractionActiveDict = (
-        out.ribosomeFractionActiveDict
-    )
-
-    for cond_out in out.condition_outputs:
-        spec = cell_specs[cond_out.condition_label]
-        spec["avgCellDryMassInit"] = cond_out.avg_cell_dry_mass_init
-        spec["fitAvgSolublePoolMass"] = cond_out.fit_avg_soluble_pool_mass
-        spec["bulkContainer"] = cond_out.bulk_container
+from vparca.fitting import rescale_mass_for_soluble_metabolites
+from vparca.steps._facade import make_sim_data_facade
+from vparca.wholecell.utils import units
 
 
 # ============================================================================
-# Pure sub-functions
+# Pure sub-function
 # ============================================================================
-
 
 def compute_synth_prob_fractions(rna_synth_prob, is_mRNA, is_tRNA, is_rRNA):
-    """
-    Compute the total synthesis probability for mRNA, tRNA, and rRNA.
-
-    Args:
-        rna_synth_prob: array of synthesis probabilities per RNA
-        is_mRNA: boolean mask for mRNAs
-        is_tRNA: boolean mask for tRNAs
-        is_rRNA: boolean mask for rRNAs
-
-    Returns:
-        dict with keys "mRna", "tRna", "rRna" mapping to float sums
-    """
+    """Sum-by-class synthesis probabilities."""
     return {
         "mRna": float(rna_synth_prob[is_mRNA].sum()),
         "tRna": float(rna_synth_prob[is_tRNA].sum()),
@@ -165,230 +47,150 @@ def compute_synth_prob_fractions(rna_synth_prob, is_mRNA, is_tRNA, is_rRNA):
 
 
 # ============================================================================
-# Main compute function
+# Step
 # ============================================================================
 
-
-def compute_set_conditions(inp: SetConditionsInput) -> SetConditionsOutput:
-    """
-    Pure function: loop over conditions, rescale mass, populate dicts.
-
-    No sim_data, no cell_specs, no side effects.
-    """
-    rnaSynthProbFraction = {}
-    rnapFractionActiveDict = {}
-    rnaSynthProbRProtein = {}
-    rnaSynthProbRnaPolymerase = {}
-    rnaPolymeraseElongationRateDict = {}
-    expectedDryMassIncreaseDict = {}
-    ribosomeElongationRateDict = {}
-    ribosomeFractionActiveDict = {}
-
-    condition_outputs = []
-
-    for cond in inp.conditions:
-        if inp.verbose > 0:
-            print("Updating mass in condition {}".format(cond.condition_label))
-
-        # Rescale mass for soluble metabolites
-        avg_cell_dry_mass_init, fit_avg_soluble_pool_mass = (
-            rescale_mass_for_soluble_metabolites(
-                cond.bulk_container,
-                cond.target_molecule_ids,
-                cond.target_molecule_concentrations,
-                cond.molecular_weights,
-                cond.non_small_molecule_initial_cell_mass,
-                cond.avg_cell_to_initial_cell_conversion_factor,
-                cond.cell_density,
-                cond.n_avogadro,
-            )
-        )
-
-        if inp.verbose > 0:
-            print("{} to {}".format(cond.avg_cell_dry_mass_init_old, avg_cell_dry_mass_init))
-
-        condition_outputs.append(
-            SetConditionsConditionOutput(
-                condition_label=cond.condition_label,
-                avg_cell_dry_mass_init=avg_cell_dry_mass_init,
-                fit_avg_soluble_pool_mass=fit_avg_soluble_pool_mass,
-                bulk_container=cond.bulk_container,
-            )
-        )
-
-        # Populate per-nutrient dicts (only for conditions without perturbations)
-        if not cond.has_perturbations:
-            nutrients = cond.nutrients
-
-            if nutrients not in rnaSynthProbFraction:
-                rnaSynthProbFraction[nutrients] = compute_synth_prob_fractions(
-                    cond.rna_synth_prob, inp.is_mRNA, inp.is_tRNA, inp.is_rRNA
-                )
-
-            if nutrients not in rnaSynthProbRProtein:
-                rnaSynthProbRProtein[nutrients] = cond.rna_synth_prob[
-                    inp.includes_ribosomal_protein
-                ]
-
-            if nutrients not in rnaSynthProbRnaPolymerase:
-                rnaSynthProbRnaPolymerase[nutrients] = cond.rna_synth_prob[
-                    inp.includes_RNAP
-                ]
-
-            if nutrients not in rnapFractionActiveDict:
-                rnapFractionActiveDict[nutrients] = cond.fraction_active_rnap
-
-            if nutrients not in rnaPolymeraseElongationRateDict:
-                rnaPolymeraseElongationRateDict[nutrients] = cond.rnap_elongation_rate
-
-            if nutrients not in expectedDryMassIncreaseDict:
-                expectedDryMassIncreaseDict[nutrients] = avg_cell_dry_mass_init
-
-            if nutrients not in ribosomeElongationRateDict:
-                ribosomeElongationRateDict[nutrients] = cond.ribosome_elongation_rate
-
-            if nutrients not in ribosomeFractionActiveDict:
-                ribosomeFractionActiveDict[nutrients] = cond.fraction_active_ribosome
-
-    return SetConditionsOutput(
-        rnaSynthProbFraction=rnaSynthProbFraction,
-        rnapFractionActiveDict=rnapFractionActiveDict,
-        rnaSynthProbRProtein=rnaSynthProbRProtein,
-        rnaSynthProbRnaPolymerase=rnaSynthProbRnaPolymerase,
-        rnaPolymeraseElongationRateDict=rnaPolymeraseElongationRateDict,
-        expectedDryMassIncreaseDict=expectedDryMassIncreaseDict,
-        ribosomeElongationRateDict=ribosomeElongationRateDict,
-        ribosomeFractionActiveDict=ribosomeFractionActiveDict,
-        condition_outputs=condition_outputs,
-    )
-
-
-
-# ---------------------------------------------------------------------------
-# Stage 8: Set Conditions — Extract / Pure / Merge
-# ---------------------------------------------------------------------------
-
-# Port schema shared by Extract (outputs) and SetConditionsStep (inputs)
-_STEP_08_INPUT_PORTS = {
-    'conditions': 'overwrite',
-    'is_mRNA': 'overwrite',
-    'is_tRNA': 'overwrite',
-    'is_rRNA': 'overwrite',
-    'includes_ribosomal_protein': 'overwrite',
-    'includes_RNAP': 'overwrite',
+INPUT_PORTS = {
+    'tick_7'                            : 'overwrite',
+    'transcription':            'sim_data.transcription',
+    'translation':              'sim_data.translation',
+    'metabolism':               'sim_data.metabolism',
+    'mass':                     'sim_data.mass',
+    'constants':                'sim_data.constants',
+    'growth_rate_parameters':   'sim_data.growth_rate_parameters',
+    'getter':                   'overwrite',
+    'conditions':               'overwrite',
+    'condition_to_doubling_time': 'overwrite',
+    'cell_specs':               'overwrite',
 }
 
-# Port schema shared by SetConditionsStep (outputs) and Merge (inputs)
-_STEP_08_OUTPUT_PORTS = {
-    'rnaSynthProbFraction': 'overwrite',
-    'rnapFractionActiveDict': 'overwrite',
-    'rnaSynthProbRProtein': 'overwrite',
-    'rnaSynthProbRnaPolymerase': 'overwrite',
-    'rnaPolymeraseElongationRateDict': 'overwrite',
-    'expectedDryMassIncreaseDict': 'overwrite',
-    'ribosomeElongationRateDict': 'overwrite',
-    'ribosomeFractionActiveDict': 'overwrite',
-    'condition_outputs': 'overwrite',
+OUTPUT_PORTS = {
+    'tick_8'                            : 'overwrite',
+    'transcription':                  'sim_data.transcription',
+    'translation':                    'sim_data.translation',
+    'cell_specs':                     'overwrite',
+    'expected_dry_mass_increase_dict': 'overwrite',
 }
-
-
-class ExtractForStep8Step(Step):
-    """Helper: extract fields from parca_state for the pure Stage 8 step."""
-
-    def inputs(self):
-        return {'state': 'parca_state'}
-
-    def outputs(self):
-        return dict(_STEP_08_INPUT_PORTS)
-
-    def update(self, state):
-        parca_state = state['state']
-        inp = extract_input(parca_state.sim_data, parca_state.cell_specs)
-        return {
-            'conditions': inp.conditions,
-            'is_mRNA': inp.is_mRNA,
-            'is_tRNA': inp.is_tRNA,
-            'is_rRNA': inp.is_rRNA,
-            'includes_ribosomal_protein': inp.includes_ribosomal_protein,
-            'includes_RNAP': inp.includes_RNAP,
-        }
 
 
 class SetConditionsStep(Step):
-    """Stage 8: PURE — every field is an explicit typed port.
+    """Step 8 — set_conditions.  See module docstring."""
 
-    No parca_state in inputs or outputs.  Operates entirely on
-    individually-named data ports extracted by ExtractForStep8Step.
-    """
-
-    config_schema = {
-        'verbose': {'_type': 'integer', '_default': 1},
-    }
+    config_schema = {'verbose': {'_type': 'integer', '_default': 1}}
 
     def inputs(self):
-        return dict(_STEP_08_INPUT_PORTS)
+        return dict(INPUT_PORTS)
 
     def outputs(self):
-        return dict(_STEP_08_OUTPUT_PORTS)
+        return dict(OUTPUT_PORTS)
 
     def update(self, state):
         t0 = time.time()
-        inp = SetConditionsInput(
-            conditions=state['conditions'],
-            is_mRNA=state['is_mRNA'],
-            is_tRNA=state['is_tRNA'],
-            is_rRNA=state['is_rRNA'],
-            includes_ribosomal_protein=state['includes_ribosomal_protein'],
-            includes_RNAP=state['includes_RNAP'],
-            verbose=self.config.get('verbose', 1),
-        )
-        out = compute_set_conditions(inp)
-        print(f"  Stage 8 (set_conditions) completed in {time.time() - t0:.1f}s")
+
+        sd = make_sim_data_facade(state)
+        cell_specs = dict(state['cell_specs'])
+        verbose = self.config.get('verbose', 1)
+
+        rna_data = sd.process.transcription.rna_data
+        is_mRNA = rna_data["is_mRNA"]
+        is_tRNA = rna_data["is_tRNA"]
+        is_rRNA = rna_data["is_rRNA"]
+        includes_rprotein = rna_data["includes_ribosomal_protein"]
+        includes_RNAP     = rna_data["includes_RNAP"]
+
+        rnaSynthProbFraction            = {}
+        rnapFractionActiveDict          = {}
+        rnaSynthProbRProtein            = {}
+        rnaSynthProbRnaPolymerase       = {}
+        rnaPolymeraseElongationRateDict = {}
+        expectedDryMassIncreaseDict     = {}
+        ribosomeElongationRateDict      = {}
+        ribosomeFractionActiveDict      = {}
+
+        molar_units = units.mol / units.L
+
+        for condition_label in sorted(cell_specs):
+            condition = sd.conditions[condition_label]
+            nutrients = condition["nutrients"]
+            doubling_time = sd.condition_to_doubling_time[condition_label]
+            spec = cell_specs[condition_label]
+
+            conc_dict = (
+                sd.process.metabolism.concentration_updates
+                  .concentrations_based_on_nutrients(media_id=nutrients)
+            )
+            conc_dict.update(sd.mass.getBiomassAsConcentrations(doubling_time))
+
+            target_ids = sorted(conc_dict)
+            target_concs = molar_units * np.array(
+                [conc_dict[k].asNumber(molar_units) for k in target_ids]
+            )
+            mw = sd.getter.get_masses(target_ids)
+
+            fracs = sd.mass.get_component_masses(doubling_time)
+            non_small = (
+                fracs["proteinMass"] + fracs["rnaMass"] + fracs["dnaMass"]
+            ) / sd.mass.avg_cell_to_initial_cell_conversion_factor
+
+            grp = sd.growth_rate_parameters
+            fraction_active_rnap     = grp.get_fraction_active_rnap(doubling_time)
+            rnap_elongation_rate     = grp.get_rnap_elongation_rate(doubling_time)
+            ribosome_elongation_rate = grp.get_ribosome_elongation_rate(doubling_time)
+            fraction_active_ribo     = grp.get_fraction_active_ribosome(doubling_time)
+
+            bulk_container = spec["bulkContainer"].copy()
+            rna_synth_prob = sd.process.transcription.rna_synth_prob[condition_label].copy()
+
+            if verbose > 0:
+                print(f"Updating mass in condition {condition_label}")
+
+            avg_cell_dry_mass_init, fit_avg_soluble_pool_mass = (
+                rescale_mass_for_soluble_metabolites(
+                    bulk_container,
+                    target_ids,
+                    target_concs,
+                    mw,
+                    non_small,
+                    sd.mass.avg_cell_to_initial_cell_conversion_factor,
+                    sd.constants.cell_density,
+                    sd.constants.n_avogadro,
+                )
+            )
+
+            spec["avgCellDryMassInit"]     = avg_cell_dry_mass_init
+            spec["fitAvgSolublePoolMass"]  = fit_avg_soluble_pool_mass
+            spec["bulkContainer"]          = bulk_container
+
+            if condition["perturbations"]:
+                continue
+            # Populate per-nutrient dicts — first occurrence wins.
+            rnaSynthProbFraction.setdefault(
+                nutrients,
+                compute_synth_prob_fractions(rna_synth_prob, is_mRNA, is_tRNA, is_rRNA))
+            rnaSynthProbRProtein.setdefault(
+                nutrients, rna_synth_prob[includes_rprotein])
+            rnaSynthProbRnaPolymerase.setdefault(
+                nutrients, rna_synth_prob[includes_RNAP])
+            rnapFractionActiveDict.setdefault(nutrients, fraction_active_rnap)
+            rnaPolymeraseElongationRateDict.setdefault(nutrients, rnap_elongation_rate)
+            expectedDryMassIncreaseDict.setdefault(nutrients, avg_cell_dry_mass_init)
+            ribosomeElongationRateDict.setdefault(nutrients, ribosome_elongation_rate)
+            ribosomeFractionActiveDict.setdefault(nutrients, fraction_active_ribo)
+
+        # Install per-nutrient dicts onto the subsystem objects.
+        sd.process.transcription.rnaSynthProbFraction            = rnaSynthProbFraction
+        sd.process.transcription.rnapFractionActiveDict          = rnapFractionActiveDict
+        sd.process.transcription.rnaSynthProbRProtein            = rnaSynthProbRProtein
+        sd.process.transcription.rnaSynthProbRnaPolymerase       = rnaSynthProbRnaPolymerase
+        sd.process.transcription.rnaPolymeraseElongationRateDict = rnaPolymeraseElongationRateDict
+        sd.process.translation.ribosomeElongationRateDict        = ribosomeElongationRateDict
+        sd.process.translation.ribosomeFractionActiveDict        = ribosomeFractionActiveDict
+
+        print(f"  Step 8 (set_conditions) completed in {time.time() - t0:.1f}s")
         return {
-            'rnaSynthProbFraction': out.rnaSynthProbFraction,
-            'rnapFractionActiveDict': out.rnapFractionActiveDict,
-            'rnaSynthProbRProtein': out.rnaSynthProbRProtein,
-            'rnaSynthProbRnaPolymerase': out.rnaSynthProbRnaPolymerase,
-            'rnaPolymeraseElongationRateDict': out.rnaPolymeraseElongationRateDict,
-            'expectedDryMassIncreaseDict': out.expectedDryMassIncreaseDict,
-            'ribosomeElongationRateDict': out.ribosomeElongationRateDict,
-            'ribosomeFractionActiveDict': out.ribosomeFractionActiveDict,
-            'condition_outputs': out.condition_outputs,
-        }
-
-
-class MergeAfterStep8Step(Step):
-    """Helper: merge Stage 8 outputs back into parca_state."""
-
-    def inputs(self):
-        return {
-            'state': 'parca_state',
-            **_STEP_08_OUTPUT_PORTS,
-        }
-
-    def outputs(self):
-        return {'state': 'parca_state'}
-
-    def update(self, state):
-        parca_state = state['state']
-        sim_data = parca_state.sim_data
-        cell_specs = parca_state.cell_specs
-
-        out = SetConditionsOutput(
-            rnaSynthProbFraction=state['rnaSynthProbFraction'],
-            rnapFractionActiveDict=state['rnapFractionActiveDict'],
-            rnaSynthProbRProtein=state['rnaSynthProbRProtein'],
-            rnaSynthProbRnaPolymerase=state['rnaSynthProbRnaPolymerase'],
-            rnaPolymeraseElongationRateDict=state['rnaPolymeraseElongationRateDict'],
-            expectedDryMassIncreaseDict=state['expectedDryMassIncreaseDict'],
-            ribosomeElongationRateDict=state['ribosomeElongationRateDict'],
-            ribosomeFractionActiveDict=state['ribosomeFractionActiveDict'],
-            condition_outputs=state['condition_outputs'],
-        )
-        merge_output(sim_data, cell_specs, out)
-
-        return {
-            'state': ParcaState(sim_data=sim_data, cell_specs=cell_specs),
-        }
-
-
+            'transcription':                   sd.process.transcription,
+            'translation':                     sd.process.translation,
+            'cell_specs':                      cell_specs,
+            'expected_dry_mass_increase_dict': expectedDryMassIncreaseDict,
+        
+            'tick_8': True,}

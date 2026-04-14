@@ -1,236 +1,236 @@
 """
-Stage 3: basal_specs — Build basal cell specifications.
+Step 3 — basal_specs.  Build basal cell specifications.
 
-Three public functions:
-    extract_input(sim_data, cell_specs, **kwargs) -> BasalSpecsInput
-    compute_basal_specs(inp) -> BasalSpecsOutput
-    merge_output(sim_data, cell_specs, out)
+Runs ``expressionConverge`` to fit basal RNA expression + synthesis
+probabilities, then sets ppGpp-regulated expression, fits endoRNase Km
+values, and fits the growth-associated-maintenance cost.
 
-This stage:
-1. Runs expressionConverge to iteratively fit RNA expression and synthesis
-   probabilities for the basal condition
-2. Sets ppGpp-regulated expression
-3. Fits Km values for endoRNase-mediated RNA decay
-4. Fits growth-associated maintenance costs
+All coupling to ``sim_data`` is threaded through explicit subsystem-object
+ports and data-leaf ports — no ``sim_data`` or ``cell_specs`` blob is
+passed.  Inside ``update()`` a minimal ``sim_data``-shaped facade is built
+from port values purely to satisfy the legacy sub-function APIs; because
+the facade holds live references, mutations propagate back through the
+output ports.
 
-NOTE: compute_basal_specs mutates sim_data_ref because downstream
-sub-functions (set_ppgpp_expression, Km fitting, maintenance fitting)
-depend on mass and expression values set by expressionConverge.
-merge_output only writes cell_specs["basal"].
+Store paths wired by the composite
+----------------------------------
+
+READS (subsystems, live references):
+  ``transcription``                process / transcription
+  ``translation``                  process / translation
+  ``metabolism``                   process / metabolism
+  ``rna_decay``                    process / rna_decay
+  ``complexation``                 process / complexation
+  ``replication``                  process / replication
+  ``mass``                         mass
+  ``constants``                    constants
+  ``growth_rate_parameters``       growth_rate_parameters
+  ``molecule_groups``              molecule_groups
+  ``molecule_ids``                 molecule_ids
+  ``relation``                     relation
+  ``bulk_molecules``               internal_state / bulk_molecules
+READS (data leaves):
+  ``condition_to_doubling_time``   condition_to_doubling_time
+  ``cell_specs``                   cell_specs
+
+WRITES (mutated subsystems + cell_specs entry):
+  ``transcription``, ``mass``, ``constants``, ``rna_decay``  — in place
+  ``cell_specs``                   cell_specs  (with new ``basal`` entry)
 """
 
 import binascii
 import functools
 import os
 import pickle
+import time
 
 import numpy as np
 import scipy.optimize
 
+from process_bigraph import Step
+
 from vparca.ecoli.library.schema import bulk_name_to_idx, counts
 from vparca.wholecell.utils import units
 
-from vparca.fitting import (
-    VERBOSE,
-    expressionConverge,
-    rescaleMassForSolubleMetabolites,
-)
-from vparca.types import BasalSpecsInput, BasalSpecsOutput
+from vparca.fitting import VERBOSE, expressionConverge
+from vparca.steps._facade import make_sim_data_facade
 
 
+INPUT_PORTS = {
+    'tick_2'                            : 'overwrite',
+    # subsystem objects
+    'transcription':            'sim_data.transcription',
+    'translation':              'sim_data.translation',
+    'metabolism':               'sim_data.metabolism',
+    'rna_decay':                'sim_data.rna_decay',
+    'complexation':             'sim_data.complexation',
+    'replication':              'sim_data.replication',
+    'mass':                     'sim_data.mass',
+    'constants':                'sim_data.constants',
+    'growth_rate_parameters':   'sim_data.growth_rate_parameters',
+    'molecule_groups':          'overwrite',
+    'molecule_ids':             'overwrite',
+    'relation':                 'overwrite',
+    'getter':                   'overwrite',
+    'bulk_molecules':           'overwrite',
+    # data leaves
+    'condition_to_doubling_time': 'overwrite',
+    'cell_specs':                 'overwrite',
+}
 
-import time
-from process_bigraph import Step
-
-from vparca.state import ParcaState
-
-# ============================================================================
-# Extract / Merge
-# ============================================================================
-
-
-def extract_input(sim_data, cell_specs, **kwargs) -> BasalSpecsInput:
-    """Pull configuration from kwargs and pass sim_data as mutable ref."""
-    return BasalSpecsInput(
-        variable_elongation_transcription=kwargs.get(
-            "variable_elongation_transcription", True
-        ),
-        variable_elongation_translation=kwargs.get(
-            "variable_elongation_translation", False
-        ),
-        disable_ribosome_capacity_fitting=kwargs.get(
-            "disable_ribosome_capacity_fitting", False
-        ),
-        disable_rnapoly_capacity_fitting=kwargs.get(
-            "disable_rnapoly_capacity_fitting", False
-        ),
-        cache_dir=kwargs.get("cache_dir"),
-        sim_data_ref=sim_data,
-    )
+OUTPUT_PORTS = {
+    'tick_3'                            : 'overwrite',
+    # subsystems mutated in place; return the objects
+    'transcription':  'sim_data.transcription',
+    'mass':           'sim_data.mass',
+    'constants':      'sim_data.constants',
+    'rna_decay':      'sim_data.rna_decay',
+    # cell_specs with new ['basal'] entry
+    'cell_specs':     'overwrite',
+}
 
 
-def merge_output(sim_data, cell_specs, out: BasalSpecsOutput):
-    """Write computed results into cell_specs["basal"].
+class BasalSpecsStep(Step):
+    """Step 3 — build basal cell specifications.  See module docstring."""
 
-    sim_data mutations are already applied by compute_basal_specs
-    via sim_data_ref.
-    """
-    cell_specs["basal"] = {
-        "concDict": out.conc_dict,
-        "expression": out.expression,
-        "synthProb": out.synth_prob,
-        "fit_cistron_expression": out.fit_cistron_expression,
-        "doubling_time": out.doubling_time,
-        "avgCellDryMassInit": out.avg_cell_dry_mass_init,
-        "fitAvgSolubleTargetMolMass": out.fit_avg_soluble_target_mol_mass,
-        "bulkContainer": out.bulk_container,
+    config_schema = {
+        'variable_elongation_transcription':
+            {'_type': 'boolean', '_default': True},
+        'variable_elongation_translation':
+            {'_type': 'boolean', '_default': False},
+        'disable_ribosome_capacity_fitting':
+            {'_type': 'boolean', '_default': False},
+        'disable_rnapoly_capacity_fitting':
+            {'_type': 'boolean', '_default': False},
+        'cache_dir': 'string',
     }
 
+    def inputs(self):
+        return dict(INPUT_PORTS)
 
-# ============================================================================
-# Compute
-# ============================================================================
+    def outputs(self):
+        return dict(OUTPUT_PORTS)
 
+    def update(self, state):
+        t0 = time.time()
 
-def compute_basal_specs(inp: BasalSpecsInput) -> BasalSpecsOutput:
-    """Run the full basal_specs stage.
+        sd = make_sim_data_facade(state)
 
-    This function mutates inp.sim_data_ref as a side effect because
-    sub-functions (set_ppgpp_expression, setKm, fitMaintenanceCosts)
-    depend on earlier sim_data updates.
-    """
-    sim_data = inp.sim_data_ref
+        # --- expressionConverge — iterative fit of expression + synth prob
+        conc_dict = (
+            sd.process.metabolism.concentration_updates
+              .concentrations_based_on_nutrients(media_id="minimal")
+        )
+        expression = sd.process.transcription.rna_expression["basal"].copy()
+        doubling_time = state['condition_to_doubling_time']["basal"]
 
-    # --- Step 1: Build basal cell specifications via expressionConverge ---
-    conc_dict = (
-        sim_data.process.metabolism.concentration_updates
-        .concentrations_based_on_nutrients(media_id="minimal")
-    )
-    expression = sim_data.process.transcription.rna_expression["basal"].copy()
-    doubling_time = sim_data.condition_to_doubling_time["basal"]
+        (
+            expression, synth_prob, fit_cistron_expression,
+            avg_cell_dry_mass_init, fit_avg_soluble_target_mol_mass,
+            bulk_container, _,
+        ) = expressionConverge(
+            sd, expression, conc_dict, doubling_time, conditionKey="basal",
+            variable_elongation_transcription=self.config.get(
+                'variable_elongation_transcription', True),
+            variable_elongation_translation=self.config.get(
+                'variable_elongation_translation', False),
+            disable_ribosome_capacity_fitting=self.config.get(
+                'disable_ribosome_capacity_fitting', False),
+            disable_rnapoly_capacity_fitting=self.config.get(
+                'disable_rnapoly_capacity_fitting', False),
+        )
 
-    (
-        expression,
-        synth_prob,
-        fit_cistron_expression,
-        avg_cell_dry_mass_init,
-        fit_avg_soluble_target_mol_mass,
-        bulk_container,
-        _,
-    ) = expressionConverge(
-        sim_data,
-        expression,
-        conc_dict,
-        doubling_time,
-        conditionKey="basal",
-        variable_elongation_transcription=inp.variable_elongation_transcription,
-        variable_elongation_translation=inp.variable_elongation_translation,
-        disable_ribosome_capacity_fitting=inp.disable_ribosome_capacity_fitting,
-        disable_rnapoly_capacity_fitting=inp.disable_rnapoly_capacity_fitting,
-    )
+        # --- apply mass updates (needed by downstream sub-functions)
+        sd.mass.avg_cell_dry_mass_init = avg_cell_dry_mass_init
+        sd.mass.avg_cell_dry_mass = (
+            sd.mass.avg_cell_dry_mass_init
+            * sd.mass.avg_cell_to_initial_cell_conversion_factor
+        )
+        sd.mass.avg_cell_water_mass_init = (
+            sd.mass.avg_cell_dry_mass_init
+            / sd.mass.cell_dry_mass_fraction
+            * sd.mass.cell_water_mass_fraction
+        )
+        sd.mass.fitAvgSolubleTargetMolMass = fit_avg_soluble_target_mol_mass
 
-    # --- Apply sim_data mass updates (needed by downstream functions) ---
-    sim_data.mass.avg_cell_dry_mass_init = avg_cell_dry_mass_init
-    sim_data.mass.avg_cell_dry_mass = (
-        sim_data.mass.avg_cell_dry_mass_init
-        * sim_data.mass.avg_cell_to_initial_cell_conversion_factor
-    )
-    sim_data.mass.avg_cell_water_mass_init = (
-        sim_data.mass.avg_cell_dry_mass_init
-        / sim_data.mass.cell_dry_mass_fraction
-        * sim_data.mass.cell_water_mass_fraction
-    )
-    sim_data.mass.fitAvgSolubleTargetMolMass = fit_avg_soluble_target_mol_mass
+        # --- apply expression updates (needed by set_ppgpp_expression)
+        sd.process.transcription.rna_expression["basal"][:] = expression
+        sd.process.transcription.rna_synth_prob["basal"][:] = synth_prob
+        sd.process.transcription.fit_cistron_expression["basal"] = fit_cistron_expression
 
-    # --- Apply sim_data expression updates (needed by set_ppgpp_expression) ---
-    sim_data.process.transcription.rna_expression["basal"][:] = expression
-    sim_data.process.transcription.rna_synth_prob["basal"][:] = synth_prob
-    sim_data.process.transcription.fit_cistron_expression["basal"] = (
-        fit_cistron_expression
-    )
+        # --- ppGpp regulation
+        sd.process.transcription.set_ppgpp_expression(sd)
 
-    # --- Step 2: Set ppGpp-regulated expression ---
-    sim_data.process.transcription.set_ppgpp_expression(sim_data)
+        # --- endoRNase Km fitting
+        Km = setKmCooperativeEndoRNonLinearRNAdecay(
+            sd, bulk_container, self.config.get('cache_dir', ''),
+        )
+        n_transcribed_rnas = len(sd.process.transcription.rna_data)
+        sd.process.transcription.rna_data["Km_endoRNase"] = Km[:n_transcribed_rnas]
+        sd.process.transcription.mature_rna_data["Km_endoRNase"] = Km[n_transcribed_rnas:]
 
-    # --- Step 3: Fit Km values for endoRNase-mediated RNA decay ---
-    Km = setKmCooperativeEndoRNonLinearRNAdecay(
-        sim_data, bulk_container, inp.cache_dir
-    )
-    n_transcribed_rnas = len(sim_data.process.transcription.rna_data)
-    sim_data.process.transcription.rna_data["Km_endoRNase"] = (
-        Km[:n_transcribed_rnas]
-    )
-    sim_data.process.transcription.mature_rna_data["Km_endoRNase"] = (
-        Km[n_transcribed_rnas:]
-    )
+        # --- maintenance costs
+        fitMaintenanceCosts(sd, bulk_container)
 
-    # --- Step 4: Fit maintenance costs ---
-    fitMaintenanceCosts(sim_data, bulk_container)
+        # --- record cell_specs["basal"]
+        cell_specs = dict(state['cell_specs'])
+        cell_specs["basal"] = {
+            "concDict":                  conc_dict,
+            "expression":                expression,
+            "synthProb":                 synth_prob,
+            "fit_cistron_expression":    fit_cistron_expression,
+            "doubling_time":             doubling_time,
+            "avgCellDryMassInit":        avg_cell_dry_mass_init,
+            "fitAvgSolubleTargetMolMass": fit_avg_soluble_target_mol_mass,
+            "bulkContainer":             bulk_container,
+        }
 
-    return BasalSpecsOutput(
-        conc_dict=conc_dict,
-        expression=expression,
-        synth_prob=synth_prob,
-        fit_cistron_expression=fit_cistron_expression,
-        doubling_time=doubling_time,
-        avg_cell_dry_mass_init=avg_cell_dry_mass_init,
-        fit_avg_soluble_target_mol_mass=fit_avg_soluble_target_mol_mass,
-        bulk_container=bulk_container,
-    )
+        print(f"  Step 3 (basal_specs) completed in {time.time() - t0:.1f}s")
+        return {
+            'transcription': sd.process.transcription,
+            'mass':          sd.mass,
+            'constants':     sd.constants,
+            'rna_decay':     sd.process.rna_decay,
+            'cell_specs':    cell_specs,
+        
+            'tick_3': True,}
 
 
 # ============================================================================
-# Sub-functions (ported from fit_sim_data_1.py)
+# Sub-functions (unchanged logic from fit_sim_data_1.py, but operating on
+# the sim_data facade assembled above).
 # ============================================================================
-
 
 def _crc32(*arrays: np.ndarray, initial: int = 0) -> int:
-    """Return a CRC32 checksum of the given ndarrays."""
-
-    def crc_next(initial, array):
-        shape = str(array.shape).encode()
-        values = array.tobytes()
-        return binascii.crc32(values, binascii.crc32(shape, initial))
-
+    def crc_next(accum, arr):
+        shape = str(arr.shape).encode()
+        return binascii.crc32(arr.tobytes(), binascii.crc32(shape, accum))
     return functools.reduce(crc_next, arrays, initial)
 
 
 def setKmCooperativeEndoRNonLinearRNAdecay(sim_data, bulkContainer, cache_dir):
-    """
-    Fit Michaelis-Menten constants for RNAs binding to endoRNases.
+    """Fit Michaelis-Menten constants for RNAs binding to endoRNases."""
 
-    Returns:
-        Km values in units of M (mol/L)
-    """
-
-    def arrays_differ(a: np.ndarray, b: np.ndarray) -> bool:
+    def arrays_differ(a, b):
         return a.shape != b.shape or not np.allclose(a, b, equal_nan=True)
 
     cellDensity = sim_data.constants.cell_density
     cellVolume = (
-        sim_data.mass.avg_cell_dry_mass_init
-        / cellDensity
+        sim_data.mass.avg_cell_dry_mass_init / cellDensity
         / sim_data.mass.cell_dry_mass_fraction
     )
     countsToMolar = 1 / (sim_data.constants.n_avogadro * cellVolume)
 
-    degradable_rna_ids = np.concatenate(
-        (
-            sim_data.process.transcription.rna_data["id"],
-            sim_data.process.transcription.mature_rna_data["id"],
-        )
-    )
-    degradation_rates = (1 / units.s) * np.concatenate(
-        (
-            sim_data.process.transcription.rna_data["deg_rate"].asNumber(1 / units.s),
-            sim_data.process.transcription.mature_rna_data["deg_rate"].asNumber(
-                1 / units.s
-            ),
-        )
-    )
+    degradable_rna_ids = np.concatenate((
+        sim_data.process.transcription.rna_data["id"],
+        sim_data.process.transcription.mature_rna_data["id"],
+    ))
+    degradation_rates = (1 / units.s) * np.concatenate((
+        sim_data.process.transcription.rna_data["deg_rate"].asNumber(1 / units.s),
+        sim_data.process.transcription.mature_rna_data["deg_rate"].asNumber(1 / units.s),
+    ))
     endoRNase_idx = bulk_name_to_idx(
-        sim_data.process.rna_decay.endoRNase_ids, bulkContainer["id"]
-    )
+        sim_data.process.rna_decay.endoRNase_ids, bulkContainer["id"])
     endoRNaseConc = countsToMolar * counts(bulkContainer, endoRNase_idx)
     kcatEndoRNase = sim_data.process.rna_decay.kcats
     totalEndoRnaseCapacity = units.sum(endoRNaseConc * kcatEndoRNase)
@@ -246,117 +246,61 @@ def setKmCooperativeEndoRNonLinearRNAdecay(sim_data, bulkContainer, cache_dir):
     ).asNumber()
     sim_data.process.rna_decay.Km_first_order_decay = Km_counts
 
-    # Compute derivative g(Km)
-    KmQuadratic = 1 / np.power((1 / countsToMolar * Km_counts).asNumber(), 2)
-    denominator = np.power(
-        np.sum(rna_counts / (1 / countsToMolar * Km_counts).asNumber()), 2
-    )
-    numerator = (1 / countsToMolar * totalEndoRnaseCapacity).asNumber() * (
-        denominator - (rna_counts / (1 / countsToMolar * Km_counts).asNumber())
-    )
-    gDerivative = np.abs(KmQuadratic * (1 - (numerator / denominator)))
-    if VERBOSE:
-        print("Max derivative (counts) = %f" % max(gDerivative))
-
-    KmQuadratic = 1 / np.power(Km_counts, 2)
-    denominator = np.power(np.sum(rna_conc.asNumber() / Km_counts), 2)
-    numerator = totalEndoRnaseCapacity.asNumber() * (
-        denominator - (rna_conc.asNumber() / Km_counts)
-    )
-    gDerivative = np.abs(KmQuadratic * (1 - (numerator / denominator)))
-    if VERBOSE:
-        print("Max derivative (concentration) = %f" % max(gDerivative))
-
-    # Sensitivity analysis: alpha
-    Alphas = []
-    if sim_data.constants.sensitivity_analysis_alpha:
-        Alphas = [0.0001, 0.001, 0.01, 0.1, 1, 10]
+    Alphas = [0.0001, 0.001, 0.01, 0.1, 1, 10] if (
+        sim_data.constants.sensitivity_analysis_alpha) else []
 
     total_endo_rnase_capacity_mol_l_s = totalEndoRnaseCapacity.asNumber(
-        units.mol / units.L / units.s
-    )
+        units.mol / units.L / units.s)
     rna_conc_mol_l = rna_conc.asNumber(units.mol / units.L)
     degradation_rates_s = degradation_rates.asNumber(1 / units.s)
 
     for alpha in Alphas:
-        if VERBOSE:
-            print("Alpha = %f" % alpha)
-
         loss, loss_jac, res, res_aux = sim_data.process.rna_decay.km_loss_function(
-            total_endo_rnase_capacity_mol_l_s,
-            rna_conc_mol_l,
-            degradation_rates_s,
-            isEndoRnase,
-            alpha,
-        )
+            total_endo_rnase_capacity_mol_l_s, rna_conc_mol_l,
+            degradation_rates_s, isEndoRnase, alpha)
         Km_cooperative_model = np.exp(
-            scipy.optimize.minimize(loss, np.log(Km_counts), jac=loss_jac).x
-        )
+            scipy.optimize.minimize(loss, np.log(Km_counts), jac=loss_jac).x)
         sim_data.process.rna_decay.sensitivity_analysis_alpha_residual[alpha] = np.sum(
-            np.abs(res_aux(Km_cooperative_model))
-        )
+            np.abs(res_aux(Km_cooperative_model)))
 
     alpha = 0.5
-
-    # Sensitivity analysis: kcatEndoRNase
-    kcatEndo = []
-    if sim_data.constants.sensitivity_analysis_kcat_endo:
-        kcatEndo = [0.0001, 0.001, 0.01, 0.1, 1, 10]
+    kcatEndo = [0.0001, 0.001, 0.01, 0.1, 1, 10] if (
+        sim_data.constants.sensitivity_analysis_kcat_endo) else []
 
     for kcat in kcatEndo:
-        if VERBOSE:
-            print("Kcat = %f" % kcat)
-
         totalEndoRNcap = units.sum(endoRNaseConc * kcat)
         loss, loss_jac, res, res_aux = sim_data.process.rna_decay.km_loss_function(
-            totalEndoRNcap.asNumber(units.mol / units.L),
-            rna_conc_mol_l,
-            degradation_rates_s,
-            isEndoRnase,
-            alpha,
-        )
+            totalEndoRNcap.asNumber(units.mol / units.L), rna_conc_mol_l,
+            degradation_rates_s, isEndoRnase, alpha)
         km_counts_ini = (
             (totalEndoRNcap / degradation_rates.asNumber()) - rna_conc
         ).asNumber()
         Km_cooperative_model = np.exp(
-            scipy.optimize.minimize(loss, np.log(km_counts_ini), jac=loss_jac).x
-        )
-        sim_data.process.rna_decay.sensitivity_analysis_kcat[kcat] = (
-            Km_cooperative_model
-        )
+            scipy.optimize.minimize(loss, np.log(km_counts_ini), jac=loss_jac).x)
+        sim_data.process.rna_decay.sensitivity_analysis_kcat[kcat] = Km_cooperative_model
         sim_data.process.rna_decay.sensitivity_analysis_kcat_res_ini[kcat] = np.sum(
-            np.abs(res_aux(km_counts_ini))
-        )
+            np.abs(res_aux(km_counts_ini)))
         sim_data.process.rna_decay.sensitivity_analysis_kcat_res_opt[kcat] = np.sum(
-            np.abs(res_aux(Km_cooperative_model))
-        )
+            np.abs(res_aux(Km_cooperative_model)))
 
-    # Loss function and derivative
     loss, loss_jac, res, res_aux = sim_data.process.rna_decay.km_loss_function(
-        total_endo_rnase_capacity_mol_l_s,
-        rna_conc_mol_l,
-        degradation_rates_s,
-        isEndoRnase,
-        alpha,
-    )
+        total_endo_rnase_capacity_mol_l_s, rna_conc_mol_l,
+        degradation_rates_s, isEndoRnase, alpha)
 
-    # Cache handling
     needToUpdate = ""
     checksum = _crc32(Km_counts, isEndoRnase, np.array(alpha))
-    km_filepath = os.path.join(cache_dir, f"parca-km-{checksum}.cPickle")
+    km_filepath = os.path.join(cache_dir, f"parca-km-{checksum}.cPickle") if cache_dir else ""
 
-    if os.path.exists(km_filepath):
+    if km_filepath and os.path.exists(km_filepath):
         with open(km_filepath, "rb") as f:
             Km_cache = pickle.load(f)
-
         Km_cooperative_model = Km_cache["Km_cooperative_model"]
         if (
             Km_counts.shape != Km_cooperative_model.shape
             or np.sum(np.abs(res_aux(Km_cooperative_model))) > 1e-15
             or arrays_differ(
                 Km_cache["total_endo_rnase_capacity_mol_l_s"],
-                total_endo_rnase_capacity_mol_l_s,
-            )
+                total_endo_rnase_capacity_mol_l_s)
             or arrays_differ(Km_cache["rna_conc_mol_l"], rna_conc_mol_l)
             or arrays_differ(Km_cache["degradation_rates_s"], degradation_rates_s)
         ):
@@ -368,92 +312,40 @@ def setKmCooperativeEndoRNonLinearRNAdecay(sim_data, bulkContainer, cache_dir):
         if VERBOSE:
             print(f"Running non-linear optimization to {needToUpdate} {km_filepath}")
         sol = scipy.optimize.minimize(
-            loss, np.log(Km_counts), jac=loss_jac, tol=1e-8
-        )
+            loss, np.log(Km_counts), jac=loss_jac, tol=1e-8)
         Km_cooperative_model = np.exp(sol.x)
-        Km_cache = dict(
-            Km_cooperative_model=Km_cooperative_model,
-            total_endo_rnase_capacity_mol_l_s=total_endo_rnase_capacity_mol_l_s,
-            rna_conc_mol_l=rna_conc_mol_l,
-            degradation_rates_s=degradation_rates_s,
-        )
-
-        with open(km_filepath, "wb") as f:
-            pickle.dump(Km_cache, f, protocol=pickle.HIGHEST_PROTOCOL)
-    else:
-        if VERBOSE:
-            print(
-                "Not running non-linear optimization--using cached result {}".format(
-                    km_filepath
-                )
+        if km_filepath:
+            Km_cache = dict(
+                Km_cooperative_model=Km_cooperative_model,
+                total_endo_rnase_capacity_mol_l_s=total_endo_rnase_capacity_mol_l_s,
+                rna_conc_mol_l=rna_conc_mol_l,
+                degradation_rates_s=degradation_rates_s,
             )
+            with open(km_filepath, "wb") as f:
+                pickle.dump(Km_cache, f, protocol=pickle.HIGHEST_PROTOCOL)
 
-    # Calculate log Km for loss functions
     log_Km_cooperative_model = np.log(Km_cooperative_model)
     log_Km_counts = np.log(Km_counts)
 
-    if VERBOSE > 1:
-        print("Loss function (Km inital) = %f" % np.sum(np.abs(loss(log_Km_counts))))
-        print(
-            "Loss function (optimized Km) = %f"
-            % np.sum(np.abs(loss(log_Km_cooperative_model)))
-        )
-        print("Residuals (Km initial) = %f" % np.sum(np.abs(res(Km_counts))))
-        print("Residuals optimized = %f" % np.sum(np.abs(res(Km_cooperative_model))))
-        print(
-            "EndoR residuals (Km initial) = %f"
-            % np.sum(np.abs(isEndoRnase * res(Km_counts)))
-        )
-        print(
-            "EndoR residuals optimized = %f"
-            % np.sum(np.abs(isEndoRnase * res(Km_cooperative_model)))
-        )
-        print(
-            "Residuals (scaled by Kdeg * RNAcounts) Km initial = %f"
-            % np.sum(np.abs(res_aux(Km_counts)))
-        )
-        print(
-            "Residuals (scaled by Kdeg * RNAcounts) optimized = %f"
-            % np.sum(np.abs(res_aux(Km_cooperative_model)))
-        )
-
-    # Save statistics
-    sim_data.process.rna_decay.stats_fit["LossKm"] = np.sum(
-        np.abs(loss(log_Km_counts))
-    )
-    sim_data.process.rna_decay.stats_fit["LossKmOpt"] = np.sum(
-        np.abs(loss(log_Km_cooperative_model))
-    )
-    sim_data.process.rna_decay.stats_fit["ResKm"] = np.sum(np.abs(res(Km_counts)))
-    sim_data.process.rna_decay.stats_fit["ResKmOpt"] = np.sum(
-        np.abs(res(Km_cooperative_model))
-    )
-    sim_data.process.rna_decay.stats_fit["ResEndoRNKm"] = np.sum(
-        np.abs(isEndoRnase * res(Km_counts))
-    )
-    sim_data.process.rna_decay.stats_fit["ResEndoRNKmOpt"] = np.sum(
-        np.abs(isEndoRnase * res(Km_cooperative_model))
-    )
-    sim_data.process.rna_decay.stats_fit["ResScaledKm"] = np.sum(
-        np.abs(res_aux(Km_counts))
-    )
-    sim_data.process.rna_decay.stats_fit["ResScaledKmOpt"] = np.sum(
-        np.abs(res_aux(Km_cooperative_model))
-    )
+    sim_data.process.rna_decay.stats_fit.update({
+        "LossKm":         np.sum(np.abs(loss(log_Km_counts))),
+        "LossKmOpt":      np.sum(np.abs(loss(log_Km_cooperative_model))),
+        "ResKm":          np.sum(np.abs(res(Km_counts))),
+        "ResKmOpt":       np.sum(np.abs(res(Km_cooperative_model))),
+        "ResEndoRNKm":    np.sum(np.abs(isEndoRnase * res(Km_counts))),
+        "ResEndoRNKmOpt": np.sum(np.abs(isEndoRnase * res(Km_cooperative_model))),
+        "ResScaledKm":    np.sum(np.abs(res_aux(Km_counts))),
+        "ResScaledKmOpt": np.sum(np.abs(res_aux(Km_cooperative_model))),
+    })
 
     return units.mol / units.L * Km_cooperative_model
 
 
 def fitMaintenanceCosts(sim_data, bulkContainer):
-    """
-    Fit growth-associated maintenance (GAM) cost.
-
-    Modifies sim_data.constants.darkATP.
-    """
+    """Fit growth-associated maintenance (GAM) cost; mutates constants.darkATP."""
     aaCounts = sim_data.process.translation.monomer_data["aa_counts"]
     protein_idx = bulk_name_to_idx(
-        sim_data.process.translation.monomer_data["id"], bulkContainer["id"]
-    )
+        sim_data.process.translation.monomer_data["id"], bulkContainer["id"])
     proteinCounts = counts(bulkContainer, protein_idx)
     nAvogadro = sim_data.constants.n_avogadro
     avgCellDryMassInit = sim_data.mass.avg_cell_dry_mass_init
@@ -461,96 +353,17 @@ def fitMaintenanceCosts(sim_data, bulkContainer):
     atp_per_charge = 2
 
     aaMmolPerGDCW = units.sum(
-        aaCounts * np.tile(proteinCounts.reshape(-1, 1), (1, 21)), axis=0
+        aaCounts * np.tile(proteinCounts.reshape(-1, 1), (1, 21)), axis=0,
     ) * ((1 / (units.aa * nAvogadro)) * (1 / avgCellDryMassInit))
 
     aasUsedOverCellCycle = units.sum(aaMmolPerGDCW)
-    explicit_mmol_maintenance_per_gdcw = (
-        atp_per_charge + gtpPerTranslation
-    ) * aasUsedOverCellCycle
+    explicit = (atp_per_charge + gtpPerTranslation) * aasUsedOverCellCycle
 
-    darkATP = (
-        sim_data.constants.growth_associated_maintenance
-        - explicit_mmol_maintenance_per_gdcw
-    )
+    darkATP = sim_data.constants.growth_associated_maintenance - explicit
 
     if darkATP.asNumber() < 0:
         raise ValueError(
-            "GAM has been adjusted too low. Explicit energy accounting should not exceed GAM."
-            " Consider setting darkATP to 0 if energy corrections are accurate."
+            "GAM has been adjusted too low. Explicit energy accounting should not "
+            "exceed GAM. Consider setting darkATP to 0 if energy corrections are accurate."
         )
-
     sim_data.constants.darkATP = darkATP
-
-
-
-# ---------------------------------------------------------------------------
-# Stage 3: Basal Specs (COUPLED)
-# ---------------------------------------------------------------------------
-
-class BasalSpecsStep(Step):
-    """Stage 3: Build basal cell specifications."""
-
-    config_schema = {
-        'variable_elongation_transcription': {
-            '_type': 'boolean', '_default': True},
-        'variable_elongation_translation': {
-            '_type': 'boolean', '_default': False},
-        'disable_ribosome_capacity_fitting': {
-            '_type': 'boolean', '_default': False},
-        'disable_rnapoly_capacity_fitting': {
-            '_type': 'boolean', '_default': False},
-        'cache_dir': 'string',
-    }
-
-    def inputs(self):
-        return {'state': 'parca_state'}
-
-    def outputs(self):
-        return {
-            'state': 'parca_state',
-            'conc_dict': 'overwrite',
-            'expression': 'overwrite',
-            'synth_prob': 'overwrite',
-            'fit_cistron_expression': 'overwrite',
-            'doubling_time': 'overwrite',
-            'avg_cell_dry_mass_init': 'overwrite',
-            'fit_avg_soluble_target_mol_mass': 'overwrite',
-            'bulk_container': 'overwrite',
-        }
-
-    def update(self, state):
-        t0 = time.time()
-        parca_state = state['state']
-        sim_data = parca_state.sim_data
-        cell_specs = parca_state.cell_specs
-
-        inp = extract_input(
-            sim_data, cell_specs,
-            variable_elongation_transcription=self.config.get(
-                'variable_elongation_transcription', True),
-            variable_elongation_translation=self.config.get(
-                'variable_elongation_translation', False),
-            disable_ribosome_capacity_fitting=self.config.get(
-                'disable_ribosome_capacity_fitting', False),
-            disable_rnapoly_capacity_fitting=self.config.get(
-                'disable_rnapoly_capacity_fitting', False),
-            cache_dir=self.config.get('cache_dir', ''),
-        )
-        out = compute_basal_specs(inp)
-        merge_output(sim_data, cell_specs, out)
-
-        print(f"  Stage 3 (basal_specs) completed in {time.time() - t0:.1f}s")
-        return {
-            'state': ParcaState(sim_data=sim_data, cell_specs=cell_specs),
-            'conc_dict': out.conc_dict,
-            'expression': out.expression,
-            'synth_prob': out.synth_prob,
-            'fit_cistron_expression': out.fit_cistron_expression,
-            'doubling_time': out.doubling_time,
-            'avg_cell_dry_mass_init': out.avg_cell_dry_mass_init,
-            'fit_avg_soluble_target_mol_mass': out.fit_avg_soluble_target_mol_mass,
-            'bulk_container': out.bulk_container,
-        }
-
-

@@ -1,121 +1,84 @@
 """
-Stage 6: promoter_binding — Fit transcription factor binding probabilities
-and their effects on RNA synthesis.
+Step 6 — promoter_binding.  Fit transcription-factor binding probabilities
+and their effect on RNA synthesis.
 
-Three public functions:
-    extract_input(sim_data, cell_specs, **kwargs) -> PromoterBindingInput
-    compute_promoter_binding(inp) -> PromoterBindingOutput
-    merge_output(sim_data, cell_specs, out)
+Uses CVXPY/ECOS to fit recruitment parameters ``r`` and binding
+probabilities ``P`` such that computed RNA synthesis matches the measured
+condition-specific synth probabilities.  Mutates the ``transcription`` and
+``transcription_regulation`` subsystems via the shared sub-function
+``fitPromoterBoundProbability``; writes ``r_vector`` / ``r_columns`` into
+``cell_specs["basal"]``.
 
-This stage:
-1. Calculates initial TF-promoter binding probabilities from bulk average
-   counts of TFs and ligands for each condition
-2. Uses convex optimization (CVXPY/ECOS) to fit parameters alpha and r
-   such that computed RNA synthesis probabilities match measured values
-3. Iteratively optimizes both the binding probabilities (P) and the
-   recruitment parameters (r) until convergence
+Store paths wired by the composite
+----------------------------------
 
-NOTE: compute_promoter_binding mutates sim_data_ref because
-fitPromoterBoundProbability writes pPromoterBound and rna_synth_prob
-to sim_data.  merge_output only writes cell_specs.
+READS (subsystems):
+  transcription, transcription_regulation, equilibrium, replication,
+  mass, constants, molecule_ids, molecule_groups, bulk_molecules
+READS (data leaves): cell_specs, conditions, condition_to_doubling_time
+
+WRITES: transcription, transcription_regulation (mutated), cell_specs
 """
 
-from vparca.types import (
-    PromoterBindingInput,
-    PromoterBindingOutput,
-)
-from vparca.promoter_fitting import (
-
-    fitPromoterBoundProbability,
-)
-
-
 import time
+
 from process_bigraph import Step
 
-from vparca.state import ParcaState
-
-# ============================================================================
-# Extract / Merge
-# ============================================================================
+from vparca.promoter_fitting import fitPromoterBoundProbability
+from vparca.steps._facade import make_sim_data_facade
 
 
-def extract_input(sim_data, cell_specs, **kwargs) -> PromoterBindingInput:
-    """Pull sim_data and cell_specs references for promoter fitting."""
-    return PromoterBindingInput(
-        sim_data_ref=sim_data,
-        cell_specs_ref=cell_specs,
-    )
+INPUT_PORTS = {
+    'tick_5'                            : 'overwrite',
+    'transcription':            'sim_data.transcription',
+    'transcription_regulation': 'sim_data.transcription_regulation',
+    'equilibrium':              'sim_data.equilibrium',
+    'replication':              'sim_data.replication',
+    'mass':                     'sim_data.mass',
+    'constants':                'sim_data.constants',
+    'molecule_ids':             'overwrite',
+    'molecule_groups':          'overwrite',
+    'getter':                   'overwrite',
+    'bulk_molecules':           'overwrite',
+    'conditions':               'overwrite',
+    'condition_to_doubling_time': 'overwrite',
+    'cell_specs':               'overwrite',
+}
 
+OUTPUT_PORTS = {
+    'tick_6'                            : 'overwrite',
+    'transcription':            'sim_data.transcription',
+    'transcription_regulation': 'sim_data.transcription_regulation',
+    'cell_specs':               'overwrite',
+}
 
-def merge_output(sim_data, cell_specs, out: PromoterBindingOutput):
-    """Write computed results into cell_specs.
-
-    sim_data mutations (pPromoterBound, rna_synth_prob) are already
-    applied by compute_promoter_binding via sim_data_ref.
-    """
-    cell_specs["basal"]["r_vector"] = out.r_vector
-    cell_specs["basal"]["r_columns"] = out.r_columns
-
-
-# ============================================================================
-# Compute
-# ============================================================================
-
-
-def compute_promoter_binding(inp: PromoterBindingInput) -> PromoterBindingOutput:
-    """Run the full promoter_binding stage.
-
-    This function mutates inp.sim_data_ref as a side effect because
-    fitPromoterBoundProbability sets pPromoterBound and updates
-    rna_synth_prob on sim_data.
-    """
-    sim_data = inp.sim_data_ref
-    cell_specs = inp.cell_specs_ref
-
-    print("Fitting promoter binding")
-
-    r_vector, r_columns = fitPromoterBoundProbability(sim_data, cell_specs)
-
-    return PromoterBindingOutput(
-        r_vector=r_vector,
-        r_columns=r_columns,
-    )
-
-
-
-# ---------------------------------------------------------------------------
-# Stage 6: Promoter Binding (COUPLED)
-# ---------------------------------------------------------------------------
 
 class PromoterBindingStep(Step):
-    """Stage 6: Fit transcription factor binding probabilities."""
+    """Step 6 — promoter_binding.  See module docstring."""
 
     def inputs(self):
-        return {'state': 'parca_state'}
+        return dict(INPUT_PORTS)
 
     def outputs(self):
-        return {
-            'state': 'parca_state',
-            'r_vector': 'overwrite',
-            'r_columns': 'overwrite',
-        }
+        return dict(OUTPUT_PORTS)
 
     def update(self, state):
         t0 = time.time()
-        parca_state = state['state']
-        sim_data = parca_state.sim_data
-        cell_specs = parca_state.cell_specs
 
-        inp = extract_input(sim_data, cell_specs)
-        out = compute_promoter_binding(inp)
-        merge_output(sim_data, cell_specs, out)
+        sd = make_sim_data_facade(state)
+        cell_specs = dict(state['cell_specs'])
 
-        print(f"  Stage 6 (promoter_binding) completed in {time.time() - t0:.1f}s")
+        print("Fitting promoter binding")
+        r_vector, r_columns = fitPromoterBoundProbability(sd, cell_specs)
+
+        cell_specs.setdefault("basal", {})
+        cell_specs["basal"]["r_vector"]  = r_vector
+        cell_specs["basal"]["r_columns"] = r_columns
+
+        print(f"  Step 6 (promoter_binding) completed in {time.time() - t0:.1f}s")
         return {
-            'state': ParcaState(sim_data=sim_data, cell_specs=cell_specs),
-            'r_vector': out.r_vector,
-            'r_columns': out.r_columns,
-        }
-
-
+            'transcription':            sd.process.transcription,
+            'transcription_regulation': sd.process.transcription_regulation,
+            'cell_specs':               cell_specs,
+        
+            'tick_6': True,}

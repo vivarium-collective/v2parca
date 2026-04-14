@@ -66,8 +66,11 @@ _SUBSYSTEM_PORTS = {
     # Not every sim_data subsystem has a dedicated schema type registered;
     # use overwrite for the remainder.
     'adjustments':              'overwrite',
-    'molecule_groups':           'overwrite',
-    'bulk_molecules':            'overwrite',
+    'molecule_groups':          'overwrite',
+    'molecule_ids':             'overwrite',
+    'relation':                 'overwrite',
+    'getter':                   'overwrite',
+    'bulk_molecules':           'overwrite',
 }
 
 # Pure-data top-level dict outputs.
@@ -78,9 +81,21 @@ _DATA_LEAF_PORTS = {
     'tf_to_fold_change':                'overwrite',
     'condition_active_tfs':             'overwrite',
     'condition_inactive_tfs':           'overwrite',
+    # Seed cell_specs as an empty dict — steps 3–9 populate per-condition
+    # entries into it.  Tracked as its own leaf so every step's cell_specs
+    # read/write is visible in the composite wires.
+    'cell_specs':                       'overwrite',
+    # Seeded empty; step 5 writes per-nutrient entries.
+    'translation_supply_rate':          'overwrite',
+    # Seeded empty; step 8 populates.
+    'expected_dry_mass_increase_dict':  'overwrite',
 }
 
-OUTPUT_PORTS = {**_SUBSYSTEM_PORTS, **_DATA_LEAF_PORTS}
+OUTPUT_PORTS = {
+    'tick_1': 'overwrite',
+    **_SUBSYSTEM_PORTS,
+    **_DATA_LEAF_PORTS,
+}
 
 
 class InitializeStep(Step):
@@ -130,6 +145,9 @@ class InitializeStep(Step):
             'growth_rate_parameters':   sim_data.growth_rate_parameters,
             'adjustments':              sim_data.adjustments,
             'molecule_groups':          sim_data.molecule_groups,
+            'molecule_ids':             sim_data.molecule_ids,
+            'relation':                 sim_data.relation,
+            'getter':                   sim_data.getter,
             'bulk_molecules':           sim_data.internal_state.bulk_molecules,
             # pure-data top-level dicts (copied — callers may mutate)
             'tf_to_active_inactive_conditions':
@@ -139,6 +157,10 @@ class InitializeStep(Step):
             'tf_to_fold_change':          dict(sim_data.tf_to_fold_change),
             'condition_active_tfs':       dict(sim_data.condition_active_tfs),
             'condition_inactive_tfs':     dict(sim_data.condition_inactive_tfs),
+            'cell_specs':                 {},
+            'translation_supply_rate':    dict(sim_data.translation_supply_rate),
+            'expected_dry_mass_increase_dict': {},
+            'tick_1': True,
         }
 
         print(f"  Step 1 (initialize + scatter) completed in {time.time() - t0:.1f}s")

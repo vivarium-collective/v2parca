@@ -38,64 +38,14 @@ from vparca.fitting import (
     totalCountIdDistributionRNA,
     totalCountIdDistributionProtein,
 )
-from vparca.types import (
-    FitConditionConditionInput,
-    FitConditionConditionOutput,
-    FitConditionInput,
-    FitConditionOutput,
-)
-
 import time
 from process_bigraph import Step
 
-from vparca.state import ParcaState
+from vparca.steps._facade import make_sim_data_facade
 
 # Constants (mirrored from fit_sim_data_1.py)
 N_SEEDS = 10
 VERBOSE = 1
-
-
-# ============================================================================
-# Extract / Merge
-# ============================================================================
-
-
-def extract_input(sim_data, cell_specs, **kwargs) -> FitConditionInput:
-    """Pull per-condition data from cell_specs and a read-only sim_data ref."""
-    condition_inputs = []
-    for condition_label in sorted(cell_specs):
-        spec = cell_specs[condition_label]
-        nutrients = sim_data.conditions[condition_label]["nutrients"]
-        condition_inputs.append(
-            FitConditionConditionInput(
-                condition_label=condition_label,
-                nutrients=nutrients,
-                expression=spec["expression"],
-                conc_dict=spec["concDict"],
-                avg_cell_dry_mass_init=spec["avgCellDryMassInit"],
-                doubling_time=spec["doubling_time"],
-            )
-        )
-
-    return FitConditionInput(
-        conditions=condition_inputs,
-        cpus=kwargs.get("cpus", 1),
-        sim_data_ref=sim_data,
-    )
-
-
-def merge_output(sim_data, cell_specs, out: FitConditionOutput):
-    """Write computed results back into sim_data and cell_specs."""
-    for cond_out in out.condition_outputs:
-        spec = cell_specs[cond_out.condition_label]
-        spec["bulkAverageContainer"] = cond_out.bulk_average_container
-        spec["bulkDeviationContainer"] = cond_out.bulk_deviation_container
-        spec["proteinMonomerAverageContainer"] = cond_out.protein_monomer_average_container
-        spec["proteinMonomerDeviationContainer"] = cond_out.protein_monomer_deviation_container
-        spec["translation_aa_supply"] = cond_out.translation_aa_supply
-
-    for nutrients, supply in out.translation_supply_rate.items():
-        sim_data.translation_supply_rate[nutrients] = supply
 
 
 # ============================================================================
@@ -333,114 +283,103 @@ def _fit_single_condition(sim_data, spec, condition):
     return {condition: spec}
 
 
+# (compute_fit_condition was removed — its logic is now the body of
+# FitConditionStep.update().)
+
+
+
 # ============================================================================
-# Main compute function
+# Step class — reads subsystem objects + cell_specs; writes cell_specs +
+# translation_supply_rate.  Read-only on sim_data subsystems.
 # ============================================================================
 
+INPUT_PORTS = {
+    'tick_4'                            : 'overwrite',
+    'transcription':            'sim_data.transcription',
+    'translation':              'sim_data.translation',
+    'complexation':             'sim_data.complexation',
+    'equilibrium':              'sim_data.equilibrium',
+    'two_component_system':     'sim_data.two_component_system',
+    'mass':                     'sim_data.mass',
+    'constants':                'sim_data.constants',
+    'growth_rate_parameters':   'sim_data.growth_rate_parameters',
+    'molecule_ids':             'overwrite',
+    'relation':                 'overwrite',
+    'molecule_groups':          'overwrite',
+    'getter':                   'overwrite',
+    'bulk_molecules':           'overwrite',
+    'conditions':                'overwrite',
+    'cell_specs':                'overwrite',
+}
 
-def compute_fit_condition(inp: FitConditionInput) -> FitConditionOutput:
-    """
-    Run fitCondition for each condition and collect results.
+OUTPUT_PORTS = {
+    'tick_5'                            : 'overwrite',
+    'cell_specs':             'overwrite',
+    'translation_supply_rate': 'overwrite',
+}
 
-    Does not mutate sim_data or cell_specs. All results are returned
-    via FitConditionOutput.
-
-    NOTE: sim_data_ref is accessed read-only through the input for
-    calculateBulkDistributions and calculateTranslationSupply.
-    """
-    sim_data = inp.sim_data_ref
-
-    # Build spec dicts for each condition (working copies)
-    working_specs = {}
-    for cond in inp.conditions:
-        working_specs[cond.condition_label] = {
-            "expression": cond.expression,
-            "concDict": cond.conc_dict,
-            "avgCellDryMassInit": cond.avg_cell_dry_mass_init,
-            "doubling_time": cond.doubling_time,
-        }
-
-    # Run fitCondition for each condition (possibly in parallel)
-    conditions = [cond.condition_label for cond in inp.conditions]
-    args = [
-        (sim_data, working_specs[condition], condition)
-        for condition in conditions
-    ]
-    apply_updates(_fit_single_condition, args, conditions, working_specs, inp.cpus)
-
-    # Collect per-condition outputs
-    condition_outputs = []
-    for cond in inp.conditions:
-        spec = working_specs[cond.condition_label]
-        condition_outputs.append(
-            FitConditionConditionOutput(
-                condition_label=cond.condition_label,
-                bulk_average_container=spec["bulkAverageContainer"],
-                bulk_deviation_container=spec["bulkDeviationContainer"],
-                protein_monomer_average_container=spec[
-                    "proteinMonomerAverageContainer"
-                ],
-                protein_monomer_deviation_container=spec[
-                    "proteinMonomerDeviationContainer"
-                ],
-                translation_aa_supply=spec["translation_aa_supply"],
-            )
-        )
-
-    # Build translation_supply_rate dict (first occurrence per nutrient)
-    translation_supply_rate = {}
-    for cond in inp.conditions:
-        nutrients = cond.nutrients
-        if nutrients not in translation_supply_rate:
-            spec = working_specs[cond.condition_label]
-            translation_supply_rate[nutrients] = spec["translation_aa_supply"]
-
-    return FitConditionOutput(
-        condition_outputs=condition_outputs,
-        translation_supply_rate=translation_supply_rate,
-    )
-
-
-
-# ---------------------------------------------------------------------------
-# Stage 5: Fit Condition (COUPLED)
-# ---------------------------------------------------------------------------
 
 class FitConditionStep(Step):
-    """Stage 5: Calculate bulk distributions and translation supply rates."""
+    """Step 5 — fit_condition.  Bulk distributions + translation supply rates."""
 
-    config_schema = {
-        'cpus': {'_type': 'integer', '_default': 1},
-    }
+    config_schema = {'cpus': {'_type': 'integer', '_default': 1}}
 
     def inputs(self):
-        return {'state': 'parca_state'}
+        return dict(INPUT_PORTS)
 
     def outputs(self):
-        return {
-            'state': 'parca_state',
-            'condition_outputs': 'overwrite',
-            'translation_supply_rate': 'overwrite',
-        }
+        return dict(OUTPUT_PORTS)
 
     def update(self, state):
         t0 = time.time()
-        parca_state = state['state']
-        sim_data = parca_state.sim_data
-        cell_specs = parca_state.cell_specs
 
-        inp = extract_input(
-            sim_data, cell_specs,
-            cpus=self.config.get('cpus', 1),
-        )
-        out = compute_fit_condition(inp)
-        merge_output(sim_data, cell_specs, out)
+        sd = make_sim_data_facade(state)
+        cell_specs = dict(state['cell_specs'])
 
-        print(f"  Stage 5 (fit_condition) completed in {time.time() - t0:.1f}s")
+        # Build spec dicts for each condition (working copies).
+        condition_labels = sorted(cell_specs)
+        working_specs = {}
+        for label in condition_labels:
+            spec = cell_specs[label]
+            working_specs[label] = {
+                "expression":         spec["expression"],
+                "concDict":           spec["concDict"],
+                "avgCellDryMassInit": spec["avgCellDryMassInit"],
+                "doubling_time":      spec["doubling_time"],
+            }
+
+        # Per-condition fitting (parallelizable).
+        args = [
+            (sd, working_specs[condition], condition)
+            for condition in condition_labels
+        ]
+        apply_updates(_fit_single_condition, args, condition_labels,
+                      working_specs, self.config.get('cpus', 1))
+
+        # Merge per-condition results back into cell_specs.
+        for label in condition_labels:
+            spec = working_specs[label]
+            cell_specs[label]["bulkAverageContainer"] = spec["bulkAverageContainer"]
+            cell_specs[label]["bulkDeviationContainer"] = spec["bulkDeviationContainer"]
+            cell_specs[label]["proteinMonomerAverageContainer"] = (
+                spec["proteinMonomerAverageContainer"])
+            cell_specs[label]["proteinMonomerDeviationContainer"] = (
+                spec["proteinMonomerDeviationContainer"])
+            cell_specs[label]["translation_aa_supply"] = spec["translation_aa_supply"]
+
+        # Build translation_supply_rate dict (first occurrence per nutrient).
+        translation_supply_rate = {}
+        for label in condition_labels:
+            nutrients = sd.conditions[label]["nutrients"]
+            if nutrients not in translation_supply_rate:
+                translation_supply_rate[nutrients] = (
+                    working_specs[label]["translation_aa_supply"])
+
+        print(f"  Step 5 (fit_condition) completed in {time.time() - t0:.1f}s")
         return {
-            'state': ParcaState(sim_data=sim_data, cell_specs=cell_specs),
-            'condition_outputs': out.condition_outputs,
-            'translation_supply_rate': out.translation_supply_rate,
-        }
+            'cell_specs':             cell_specs,
+            'translation_supply_rate': translation_supply_rate,
+        
+            'tick_5': True,}
 
 

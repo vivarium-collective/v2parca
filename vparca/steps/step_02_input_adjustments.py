@@ -130,6 +130,7 @@ def adjust_protein_deg_rates(monomer_ids, rates, adjustments):
 # ============================================================================
 
 INPUT_PORTS = {
+    'tick_1'                            : 'overwrite',
     'transcription':                    'sim_data.transcription',
     'translation':                      'sim_data.translation',
     'adjustments':                      'overwrite',
@@ -137,6 +138,7 @@ INPUT_PORTS = {
 }
 
 OUTPUT_PORTS = {
+    'tick_2'                            : 'overwrite',
     'transcription':                    'sim_data.transcription',
     'translation':                      'sim_data.translation',
     'tf_to_active_inactive_conditions': 'overwrite',

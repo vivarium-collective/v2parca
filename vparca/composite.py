@@ -26,7 +26,17 @@ from vparca.steps import ALL_STEP_CLASSES
 # table suffices for all wiring.
 # ---------------------------------------------------------------------------
 
-STORE_PATH = {
+# Sequencing tokens that enforce serial ordering across Steps 1-9.  Each
+# Step writes ``tick_N`` on output and reads ``tick_{N-1}`` on input; the
+# resulting dependency graph serializes Steps 1 -> 2 -> ... -> 9 even when
+# their data-level port surfaces overlap.
+_TICKS = [f'tick_{n}' for n in range(10)]  # tick_0 .. tick_9
+_TICK_PATHS = {name: [name] for name in _TICKS}
+
+
+STORE_PATH = {}
+STORE_PATH.update(_TICK_PATHS)
+STORE_PATH.update({
     # subsystem object leaves
     'transcription':                    ['process', 'transcription'],
     'translation':                      ['process', 'translation'],
@@ -42,6 +52,9 @@ STORE_PATH = {
     'growth_rate_parameters':           ['growth_rate_parameters'],
     'adjustments':                      ['adjustments'],
     'molecule_groups':                  ['molecule_groups'],
+    'molecule_ids':                     ['molecule_ids'],
+    'relation':                         ['relation'],
+    'getter':                           ['getter'],
     'bulk_molecules':                   ['internal_state', 'bulk_molecules'],
 
     # pure-data top-level dicts
@@ -51,7 +64,10 @@ STORE_PATH = {
     'tf_to_fold_change':                ['tf_to_fold_change'],
     'condition_active_tfs':             ['condition_active_tfs'],
     'condition_inactive_tfs':           ['condition_inactive_tfs'],
-}
+    'cell_specs':                       ['cell_specs'],
+    'translation_supply_rate':          ['translation_supply_rate'],
+    'expected_dry_mass_increase_dict':  ['expected_dry_mass_increase_dict'],
+})
 
 
 def _wires(port_names):
@@ -59,8 +75,13 @@ def _wires(port_names):
     return {name: STORE_PATH[name] for name in port_names}
 
 
-def build_parca_composite(raw_data, debug=False, core=None):
-    """Build a Composite that runs the PoC ParCa pipeline (steps 1+2).
+def build_parca_composite(raw_data, debug=False, cpus=1,
+                          cache_dir='', core=None,
+                          variable_elongation_transcription=True,
+                          variable_elongation_translation=False,
+                          disable_ribosome_capacity_fitting=False,
+                          disable_rnapoly_capacity_fitting=False):
+    """Build a Composite that runs the full 9-step ParCa pipeline.
 
     Args:
         raw_data: a ``KnowledgeBaseEcoli`` instance.  Passed through
@@ -68,8 +89,9 @@ def build_parca_composite(raw_data, debug=False, core=None):
             its nested KB internals at composite construction time.
         debug:    if True, Step 2 reduces tf_to_active_inactive_conditions
                   to a single key.
-        core:     optional pre-built core; if omitted one is allocated
-                  and schema types + Step classes are registered on it.
+        cpus:     parallelism for Step 4 and Step 5.
+        cache_dir: cache for Step 3's Km fitting (optional).
+        core:     optional pre-built core.
     Returns:
         The ``Composite`` instance with the pipeline already executed.
         The final store state is at ``composite.state``.
@@ -78,11 +100,42 @@ def build_parca_composite(raw_data, debug=False, core=None):
         core = allocate_core(top=ALL_STEP_CLASSES)
         register_parca_schema(core)
 
-    from vparca.steps.step_01_initialize import OUTPUT_PORTS as _step1_out
+    from vparca.steps.step_01_initialize        import OUTPUT_PORTS as _s1_out
     from vparca.steps.step_02_input_adjustments import (
-        INPUT_PORTS  as _step2_in,
-        OUTPUT_PORTS as _step2_out,
+        INPUT_PORTS as _s2_in, OUTPUT_PORTS as _s2_out)
+    from vparca.steps.step_03_basal_specs       import (
+        INPUT_PORTS as _s3_in, OUTPUT_PORTS as _s3_out)
+    from vparca.steps.step_04_tf_condition_specs import (
+        INPUT_PORTS as _s4_in, OUTPUT_PORTS as _s4_out)
+    from vparca.steps.step_05_fit_condition     import (
+        INPUT_PORTS as _s5_in, OUTPUT_PORTS as _s5_out)
+    from vparca.steps.step_06_promoter_binding  import (
+        INPUT_PORTS as _s6_in, OUTPUT_PORTS as _s6_out)
+    from vparca.steps.step_07_adjust_promoters  import (
+        INPUT_PORTS as _s7_in, OUTPUT_PORTS as _s7_out)
+    from vparca.steps.step_08_set_conditions    import (
+        INPUT_PORTS as _s8_in, OUTPUT_PORTS as _s8_out)
+    from vparca.steps.step_09_final_adjustments import (
+        INPUT_PORTS as _s9_in, OUTPUT_PORTS as _s9_out)
+
+    _elong = dict(
+        variable_elongation_transcription=variable_elongation_transcription,
+        variable_elongation_translation=variable_elongation_translation,
+        disable_ribosome_capacity_fitting=disable_ribosome_capacity_fitting,
+        disable_rnapoly_capacity_fitting=disable_rnapoly_capacity_fitting,
     )
+
+    # Ticks are already baked into each step's INPUT_PORTS / OUTPUT_PORTS
+    # so _wires() picks them up automatically.
+    s1i, s1o = {}, _wires(_s1_out.keys())
+    s2i, s2o = _wires(_s2_in.keys()), _wires(_s2_out.keys())
+    s3i, s3o = _wires(_s3_in.keys()), _wires(_s3_out.keys())
+    s4i, s4o = _wires(_s4_in.keys()), _wires(_s4_out.keys())
+    s5i, s5o = _wires(_s5_in.keys()), _wires(_s5_out.keys())
+    s6i, s6o = _wires(_s6_in.keys()), _wires(_s6_out.keys())
+    s7i, s7o = _wires(_s7_in.keys()), _wires(_s7_out.keys())
+    s8i, s8o = _wires(_s8_in.keys()), _wires(_s8_out.keys())
+    s9i, s9o = _wires(_s9_in.keys()), _wires(_s9_out.keys())
 
     spec = {
         'run_steps_on_init': True,
@@ -91,16 +144,56 @@ def build_parca_composite(raw_data, debug=False, core=None):
                 '_type':   'step',
                 'address': 'local:InitializeStep',
                 'config':  {'raw_data': raw_data},
-                'inputs':  {},
-                'outputs': _wires(_step1_out.keys()),
+                'inputs':  s1i,
+                'outputs': s1o,
             },
-
             'input_adjustments': {
                 '_type':   'step',
                 'address': 'local:InputAdjustmentsStep',
                 'config':  {'debug': debug},
-                'inputs':  _wires(_step2_in.keys()),
-                'outputs': _wires(_step2_out.keys()),
+                'inputs':  s2i, 'outputs': s2o,
+            },
+            'basal_specs': {
+                '_type':   'step',
+                'address': 'local:BasalSpecsStep',
+                'config':  {**_elong, 'cache_dir': cache_dir},
+                'inputs':  s3i, 'outputs': s3o,
+            },
+            'tf_condition_specs': {
+                '_type':   'step',
+                'address': 'local:TfConditionSpecsStep',
+                'config':  {**_elong, 'cpus': cpus},
+                'inputs':  s4i, 'outputs': s4o,
+            },
+            'fit_condition': {
+                '_type':   'step',
+                'address': 'local:FitConditionStep',
+                'config':  {'cpus': cpus},
+                'inputs':  s5i, 'outputs': s5o,
+            },
+            'promoter_binding': {
+                '_type':   'step',
+                'address': 'local:PromoterBindingStep',
+                'config':  {},
+                'inputs':  s6i, 'outputs': s6o,
+            },
+            'adjust_promoters': {
+                '_type':   'step',
+                'address': 'local:AdjustPromotersStep',
+                'config':  {},
+                'inputs':  s7i, 'outputs': s7o,
+            },
+            'set_conditions': {
+                '_type':   'step',
+                'address': 'local:SetConditionsStep',
+                'config':  {'verbose': 1},
+                'inputs':  s8i, 'outputs': s8o,
+            },
+            'final_adjustments': {
+                '_type':   'step',
+                'address': 'local:FinalAdjustmentsStep',
+                'config':  {},
+                'inputs':  s9i, 'outputs': s9o,
             },
         },
     }
